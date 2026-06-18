@@ -44,6 +44,11 @@ class MessageDispatcher:
         if not self._bot:
             logger.warning("Telegram bot instance is not initialized; skipping send/edit action.")
             return
+        
+        # Validate text content
+        if not text or not text.strip():
+            logger.warning("Cannot send/edit message with empty text. Skipping operation.")
+            return
 
         try:
             if message_id:
@@ -157,6 +162,13 @@ class MessageDispatcher:
                     return
                 except Exception as fallback_err:
                     logger.error("Retry without keyboard failed: {}", fallback_err)
+
+            if "no text in the message to edit" in error_msg.lower() or "there is no text" in error_msg.lower():
+                logger.warning(
+                    "Telegram cannot edit message with no text. This is likely a data issue. Skipping edit. Error: {}",
+                    e,
+                )
+                return
 
             logger.error("Telegram BadRequest error: {}", e, exc_info=True)
             logger.debug(
