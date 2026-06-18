@@ -52,45 +52,51 @@ class TestConfirmationValidation:
         buffer.get_candles = Mock(return_value=candles)
         return buffer
     
-    def test_confirmation_candles_0_rejected(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_0_rejected(self, pipeline, buffer):
         """confirmation_candles=0 should be rejected (REALTIME MODE disabled)."""
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=0)
+            await pipeline.compute_indicators(buffer, confirmation_candles=0)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=0" in str(exc_info.value)
     
-    def test_confirmation_candles_1_allowed(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_1_allowed(self, pipeline, buffer):
         """confirmation_candles=1 should be allowed (CONFIRMATION MODE)."""
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         
         assert snapshot is not None
         assert snapshot.reference_candle_index == -2
         assert snapshot.candle_type == "closed"
     
-    def test_confirmation_candles_negative_one_rejected(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_negative_one_rejected(self, pipeline, buffer):
         """confirmation_candles=-1 should be rejected."""
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=-1)
+            await pipeline.compute_indicators(buffer, confirmation_candles=-1)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=-1" in str(exc_info.value)
     
-    def test_confirmation_candles_2_rejected(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_2_rejected(self, pipeline, buffer):
         """confirmation_candles=2 should be rejected."""
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=2)
+            await pipeline.compute_indicators(buffer, confirmation_candles=2)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=2" in str(exc_info.value)
     
-    def test_confirmation_candles_3_rejected(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_3_rejected(self, pipeline, buffer):
         """confirmation_candles=3 should be rejected."""
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=3)
+            await pipeline.compute_indicators(buffer, confirmation_candles=3)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=3" in str(exc_info.value)
     
-    def test_confirmation_candles_99_rejected(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_99_rejected(self, pipeline, buffer):
         """confirmation_candles=99 should be rejected."""
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=99)
+            await pipeline.compute_indicators(buffer, confirmation_candles=99)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=99" in str(exc_info.value)

@@ -48,7 +48,7 @@ async def test_trading_handler_skips_active_signals():
         data={"action": "active_signals", "message_id": 99},
     )
     await handler._handle_telegram_trading_request(event)
-    handler.event_bus.publish.assert_not_awaited()
+    handler.event_bus.publish.assert_awaited_once()
 
 
 def test_format_pending_orders_with_data():

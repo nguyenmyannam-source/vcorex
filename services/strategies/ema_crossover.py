@@ -65,94 +65,184 @@ class EMACrossoverStrategy(SignalSafetyMixin, BaseStrategy):
         )
 
     async def generate_signal(self, symbol: str, timeframe: str) -> Optional[Signal]:
-        """Generate trading signal based on EMA crossover, with safe deduplication, cooldown and staleness checks."""
-        logger.debug(f"[STRATEGY-FORENSIC] generate_signal called: symbol={symbol}, timeframe={timeframe}")
+        """
+        Generate trading signal based on EMA crossover EDGE TRIGGER logic.
+        
+        [EDGE TRIGGER REFACTOR] - Atomic Snapshot at Bar Close:
+        - All calculations (EMA Crossover, ADX Filter, Body Percentage) MUST use the SAME snapshot
+        - Snapshot is locked to the CLOSED candle at index [-2] (never forming candle at [-1])
+        - Edge Trigger: Check for TRUE crossover event between [-2] and [-3], not state check
+        - Long Trigger: Fast[-2] > Slow[-2] AND Fast[-3] <= Slow[-3]
+        - Short Trigger: Fast[-2] < Slow[-2] AND Fast[-3] >= Slow[-3]
+        - Filters (ADX, Body) are only evaluated AFTER crossover is confirmed at [-2]
+        """
+        logger.debug(f"[STRATEGY-EDGE-TRIGGER] generate_signal called: symbol={symbol}, timeframe={timeframe}")
         
         # Cool‑down per (symbol, timeframe)
         if await self.is_in_cooldown(symbol, timeframe):
-            logger.debug(f"[STRATEGY-FORENSIC] REJECTED_COOLDOWN: {symbol} {timeframe}")
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_COOLDOWN: {symbol} {timeframe}")
             return None
 
         # Apply pre‑filters
         if not await self.filters(symbol, timeframe):
-            logger.debug(f"[STRATEGY-FORENSIC] REJECTED_FILTERS: {symbol} {timeframe}")
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_FILTERS: {symbol} {timeframe}")
             return None
 
         # Get indicators as MarketSnapshot for snapshot consistency
         snapshot = await self.calculate_indicators(symbol, timeframe)
         if not snapshot:
-            logger.debug(f"[STRATEGY-FORENSIC] REJECTED_NO_SNAPSHOT: {symbol} {timeframe}")
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_NO_SNAPSHOT: {symbol} {timeframe}")
             return None
         
-        # Extract indicators from snapshot for backward compatibility
-        # SHARED REFERENCE ELIMINATION: Shallow copy to prevent mutation (flat dict)
-        indicators = snapshot.indicators.copy()
-        
-        crossover_detected = indicators.get("crossover_detected", 0)
-        logger.debug(f"[STRATEGY-FORENSIC] crossover_detected={crossover_detected} for {symbol} {timeframe}")
-        
-        if not indicators.get("crossover_detected"):
+        # [EDGE TRIGGER] Validate snapshot is CLOSED candle only (index -2)
+        if snapshot.reference_candle_index != -2 or snapshot.candle_type != "closed":
             logger.debug(
-                f"[STRATEGY-FORENSIC] REJECTED_NO_CROSSOVER: {symbol} {timeframe} "
-                f"ema9={indicators.get('ema9')} ema21={indicators.get('ema21')}"
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_NOT_CLOSED_CANDLE: {symbol} {timeframe} "
+                f"ref_index={snapshot.reference_candle_index} candle_type={snapshot.candle_type}"
             )
             return None
 
         # Validate snapshot consistency
         if not snapshot.validate_consistency():
             logger.debug(
-                f"[STRATEGY-FORENSIC] REJECTED_SNAPSHOT_INCONSISTENCY: {symbol} {timeframe} "
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_SNAPSHOT_INCONSISTENCY: {symbol} {timeframe} "
                 f"snapshot_id={snapshot.snapshot_id}"
             )
             return None
 
-        # Validate that indicators dictionary matches snapshot metadata
-        indicators_ts = snapshot.indicators.get("signal_candle_ts", 0)
-        if indicators_ts and indicators_ts != snapshot.reference_candle_timestamp:
+        # [EDGE TRIGGER] Get EMA series from buffer for edge detection
+        # We need EMA values at index [-2] (closed candle) and [-3] (previous candle)
+        from core.container import container
+        mde = container.get("market_data_engine")
+        if not mde:
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_NO_MDE: {symbol} {timeframe}")
+            return None
+        
+        buffer_key = f"{symbol}_{timeframe}"
+        buffer = mde.buffers.get(buffer_key)
+        if not buffer or len(buffer.candles) < 4:
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_INSUFFICIENT_CANDLES: {symbol} {timeframe}")
+            return None
+
+        # [EDGE TRIGGER] Calculate EMA series for edge detection
+        # Get close prices for EMA calculation
+        close_prices = buffer.get_close_prices(limit=max(self.slow_period + 10, 50))
+        if len(close_prices) < self.slow_period + 3:
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_INSUFFICIENT_CLOSES: {symbol} {timeframe}")
+            return None
+
+        # Calculate EMA series
+        from services.market_data.indicators import EMACalculator
+        ema_fast_series = EMACalculator.calculate_series(close_prices, self.fast_period)
+        ema_slow_series = EMACalculator.calculate_series(close_prices, self.slow_period)
+        
+        if len(ema_fast_series) < 3 or len(ema_slow_series) < 3:
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_INSUFFICIENT_EMA: {symbol} {timeframe}")
+            return None
+
+        # [EDGE TRIGGER] Lock indices to closed candle [-2] and previous [-3]
+        idx_closed = -2  # Last closed candle
+        idx_prev = -3   # Previous candle for edge detection
+        
+        ema_fast_closed = ema_fast_series[idx_closed]
+        ema_slow_closed = ema_slow_series[idx_closed]
+        ema_fast_prev = ema_fast_series[idx_prev]
+        ema_slow_prev = ema_slow_series[idx_prev]
+        
+        # [EDGE TRIGGER] Check for TRUE crossover event (not state check)
+        is_long_cross = (ema_fast_closed > ema_slow_closed) and (ema_fast_prev <= ema_slow_prev)
+        is_short_cross = (ema_fast_closed < ema_slow_closed) and (ema_fast_prev >= ema_slow_prev)
+        
+        logger.debug(
+            f"[STRATEGY-EDGE-TRIGGER] Edge check: {symbol} {timeframe} | "
+            f"Fast[-2]={ema_fast_closed:.4f} Slow[-2]={ema_slow_closed:.4f} | "
+            f"Fast[-3]={ema_fast_prev:.4f} Slow[-3]={ema_slow_prev:.4f} | "
+            f"LongCross={is_long_cross} ShortCross={is_short_cross}"
+        )
+        
+        if not (is_long_cross or is_short_cross):
             logger.debug(
-                f"[STRATEGY-FORENSIC] REJECTED_TIMESTAMP_MISMATCH: {symbol} {timeframe} "
-                f"indicators_ts={indicators_ts} snapshot_ts={snapshot.reference_candle_timestamp} "
-                f"snapshot_id={snapshot.snapshot_id}"
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_NO_EDGE_CROSSOVER: {symbol} {timeframe} "
+                f"(No crossover event at closed candle)"
             )
             return None
 
-        # Extract entry price from snapshot raw data
-        entry_price = snapshot.raw_data.get("close") if snapshot.raw_data else None
-        if not entry_price:
+        # [EDGE TRIGGER] Determine signal direction from edge event
+        signal_type = SignalType.BUY if is_long_cross else SignalType.SELL
+        
+        # [SYNCHRONOUS FILTERS] Calculate filters at CLOSED candle index [-2] only
+        # Get OHLCV at index [-2] for body percentage calculation
+        candles = buffer.get_candles(limit=5)
+        if len(candles) < 3:
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_INSUFFICIENT_OHLCV: {symbol} {timeframe}")
+            return None
+        
+        closed_candle = candles[idx_closed]
+        high = closed_candle.high
+        low = closed_candle.low
+        open_p = closed_candle.open
+        close_p = closed_candle.close
+        
+        # Calculate body percentage at index [-2]
+        body_pct = abs(close_p - open_p) / (high - low) if (high - low) > 0 else 0.0
+        
+        # Get ADX at index [-2] from snapshot (already calculated at closed candle)
+        adx = snapshot.adx
+        
+        # [SYNCHRONOUS FILTERS] Apply ADX filter at index [-2]
+        long_timeframes = ("4H", "1D", "1W", "1M")
+        min_adx = self.adx_min_long_tf if timeframe in long_timeframes else self.adx_min_all
+        if adx > 0 and adx < min_adx:
             logger.debug(
-                f"[STRATEGY-FORENSIC] REJECTED_NO_ENTRY_PRICE: {symbol} {timeframe} "
-                f"snapshot_id={snapshot.snapshot_id}"
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_ADX: {symbol} {timeframe} "
+                f"adx={adx:.1f} < min_adx={min_adx}"
             )
             return None
-
-        # Determine signal side from snapshot
-        signal_side = snapshot.get_signal_side()
-        if not signal_side:
+        
+        # [SYNCHRONOUS FILTERS] Apply Body Percentage filter at index [-2]
+        current_min_body = self.min_body_percentages.get(timeframe, self.base_min_body_pct)
+        
+        # [FIX LỖI 4] Nếu ADX > 40 (xu hướng mạnh), giảm 50% yêu cầu thân nến tối thiểu
+        if adx > 40:
+            original_min_body = current_min_body
+            current_min_body *= 0.5
+            logger.info(
+                f"[STRATEGY-ADX-ADAPTIVE] {symbol} {timeframe}: "
+                f"ADX={adx:.1f} > 40 (Strong Trend). "
+                f"Reduced min_body from {original_min_body*100:.1f}% to {current_min_body*100:.1f}%"
+            )
+        
+        if body_pct < current_min_body:
             logger.debug(
-                f"[STRATEGY-FORENSIC] REJECTED_NO_SIGNAL_SIDE: {symbol} {timeframe} "
-                f"snapshot_id={snapshot.snapshot_id}"
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_BODY: {symbol} {timeframe} "
+                f"body_pct={body_pct*100:.2f}% < min={current_min_body*100:.1f}%"
             )
             return None
 
+        # [EDGE TRIGGER] All filters passed at closed candle - create signal
+        logger.info(
+            f"[STRATEGY-EDGE-TRIGGER] EDGE_CROSSOVER_CONFIRMED: {symbol} {timeframe} | "
+            f"Direction={signal_type.value} | "
+            f"Fast[-2]={ema_fast_closed:.4f} Slow[-2]={ema_slow_closed:.4f} | "
+            f"ADX={adx:.1f} Body={body_pct*100:.1f}%"
+        )
+
+        # Extract entry price from closed candle
+        entry_price = close_p
+        
         # Deduplication via mixin - use snapshot timestamp
         if await self.is_duplicate(symbol, timeframe, snapshot.reference_candle_timestamp):
-            logger.debug(f"[STRATEGY-FORENSIC] REJECTED_DUPLICATE: {symbol} {timeframe}")
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_DUPLICATE: {symbol} {timeframe}")
             return None
 
-        # Determine signal direction from CURRENT EMA state, not stale crossover flags
-        # This ensures signal_type reflects the actual EMA relationship at signal creation time
-        ema9 = indicators.get("ema9", 0.0)
-        ema21 = indicators.get("ema21", 0.0)
-        signal_type = SignalType.BUY if ema9 > ema21 else SignalType.SELL
-        # --- STALE CROSSOVER FLAG ELIMINATION: Log EMA-based signal assignment ---
-        logger.debug(
-            f"[EMA-BASED-SIGNAL] symbol={symbol}, timeframe={timeframe}, "
-            f"signal_type={signal_type.value}, "
-            f"EMA9={ema9:.4f}, EMA21={ema21:.4f}, "
-            f"EMA9_vs_EMA21={'GREATER' if ema9 > ema21 else 'LESS' if ema9 < ema21 else 'EQUAL'}, "
-            f"cached_crossover_bullish={indicators.get('crossover_bullish', 0.0)}, "
-            f"cached_crossover_bearish={indicators.get('crossover_bearish', 0.0)}"
-        )
+        # Build indicators dict for backward compatibility
+        indicators = snapshot.indicators.copy()
+        indicators["ema9"] = ema_fast_closed
+        indicators["ema21"] = ema_slow_closed
+        indicators["adx"] = adx
+        indicators["body_pct"] = body_pct * 100.0
+        indicators["edge_trigger"] = True
+        indicators["crossover_type"] = "long_edge" if is_long_cross else "short_edge"
 
         signal = Signal(
             strategy_name=self.config.name,
@@ -161,42 +251,41 @@ class EMACrossoverStrategy(SignalSafetyMixin, BaseStrategy):
             signal_type=signal_type,
             signal_strength=SignalStrength.HIGH,
             entry_price=entry_price,
-            indicators=indicators.copy(),  # SHARED REFERENCE ELIMINATION: Shallow copy to prevent mutation
-            reason=f"EMA{self.fast_period}/{self.slow_period} crossover detected",
+            indicators=indicators,
+            reason=f"EMA{self.fast_period}/{self.slow_period} EDGE crossover at closed candle (index -2)",
         )
 
         # Attach snapshot to signal for validation
         signal.snapshot = snapshot
-        # --- SHARED REFERENCE ELIMINATION: Log object id separation ---
-        logger.debug(
-            f"[SHARED-REF-CHECK] id(indicators)={id(indicators)}, "
-            f"id(snapshot.indicators)={id(snapshot.indicators)}, "
-            f"id(signal.indicators)={id(signal.indicators)}, "
-            f"SHARED_INDICATORS={'YES' if id(indicators) == id(snapshot.indicators) else 'NO'}, "
-            f"SHARED_SIGNAL={'YES' if id(indicators) == id(signal.indicators) else 'NO'}"
-        )
 
-        # Validate signal
-        logger.debug(f"[STRATEGY-FORENSIC] Calling validate_signal for {symbol} {timeframe}")
+        # Validate signal (additional safety checks)
+        logger.debug(f"[STRATEGY-EDGE-TRIGGER] Calling validate_signal for {symbol} {timeframe}")
         if await self.validate_signal(signal):
             # Mark deduplication processed and start cooldown (both async)
             await self.mark_processed(symbol, timeframe, snapshot.reference_candle_timestamp)
             await self.record_signal(symbol, timeframe)
-            logger.debug(f"[STRATEGY-FORENSIC] CREATED_SIGNAL: {symbol} {timeframe}")
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] CREATED_SIGNAL: {symbol} {timeframe}")
             return await self.build_trade_plan(signal)
 
-        logger.debug(f"[STRATEGY-FORENSIC] REJECTED_VALIDATE_SIGNAL: {symbol} {timeframe}")
+        logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_VALIDATE_SIGNAL: {symbol} {timeframe}")
         return None
 
     async def validate_signal(self, signal: Signal) -> bool:
-        """Validate signal meets all strategy criteria using snapshot consistency."""
+        """
+        Validate signal meets all strategy criteria using snapshot consistency.
+        
+        [EDGE TRIGGER REFACTOR] - Simplified validation:
+        - All filters (ADX, Body Percentage) are already checked in generate_signal() at index [-2]
+        - This method only performs staleness check and snapshot consistency validation
+        - Edge trigger logic ensures signal is only generated when TRUE crossover occurs at closed candle
+        """
         timeframe = signal.timeframe
-        logger.debug(f"[STRATEGY-FORENSIC] validate_signal called: {signal.symbol} {timeframe}")
+        logger.debug(f"[STRATEGY-EDGE-TRIGGER] validate_signal called: {signal.symbol} {timeframe}")
 
         # Use snapshot for validation
         if not hasattr(signal, "snapshot") or not signal.snapshot:
             logger.debug(
-                f"[STRATEGY-FORENSIC] REJECTED_NO_SNAPSHOT_ATTACHED: {signal.symbol} {timeframe}"
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_NO_SNAPSHOT_ATTACHED: {signal.symbol} {timeframe}"
             )
             return False
 
@@ -205,106 +294,38 @@ class EMACrossoverStrategy(SignalSafetyMixin, BaseStrategy):
         # Validate snapshot consistency
         if not snapshot.validate_consistency():
             logger.debug(
-                f"[STRATEGY-FORENSIC] REJECTED_SNAPSHOT_INCONSISTENCY: {signal.symbol} {timeframe} "
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_SNAPSHOT_INCONSISTENCY: {signal.symbol} {timeframe} "
                 f"snapshot_id={snapshot.snapshot_id}"
             )
             return False
 
-        # Extract body percentage from snapshot (already calculated as decimal 0.8333)
-        body_percentage = snapshot.body_pct
-
-        # Extract ADX from snapshot
-        adx = snapshot.adx
-        # Kiểm tra ngưỡng ADX theo timeframe
-        long_timeframes = ("4H", "1D", "1W", "1M")
-        min_adx = self.adx_min_long_tf if timeframe in long_timeframes else self.adx_min_all
-        logger.debug(f"[STRATEGY-FORENSIC] ADX check: adx={adx}, min_adx={min_adx} for {signal.symbol} {timeframe}")
-        if adx > 0 and adx < min_adx:
-            logger.debug(f"[STRATEGY-FORENSIC] REJECTED_ADX: {signal.symbol} {timeframe} adx={adx} < min_adx={min_adx}")
-            await self._publish_rejection(
-                signal, "weak_trend_adx", {
-                    "adx": adx,
-                    "min_adx": min_adx,
-                    "ema9": signal.indicators.get("ema9"),
-                    "ema21": signal.indicators.get("ema21"),
-                    "body_pct": body_percentage * 100.0,
-                }
-            )
-            return False
-
-        # --- BODY_PCT MUTATION FORENSIC AUDIT: Log at ema_crossover validation ---
-        logger.debug(
-            f"[MUTATION-VALIDATION] id(snapshot.indicators)={id(snapshot.indicators)}, "
-            f"snapshot.body_pct={snapshot.body_pct}, type(snapshot.body_pct)={type(snapshot.body_pct)}, "
-            f"body_percentage={body_percentage}"
-        )
-
-        # Get dynamic min body percentage for current timeframe
-        current_min_body = self.min_body_percentages.get(timeframe, self.base_min_body_pct)
-        
-        # [FIX LỖI 4] Nếu ADX > 40 (xu hướng mạnh), giảm 50% yêu cầu thân nến tối thiểu
-        # để không bỏ lỡ các con sóng lớn khi thị trường biến động cực mạnh (Flash Crash)
-        if adx > 40:
-            original_min_body = current_min_body
-            current_min_body *= 0.5
-            logger.info(
-                f"[STRATEGY-ADX-ADAPTIVE] {signal.symbol} {timeframe}: "
-                f"ADX={adx:.1f} > 40 (Strong Trend). "
-                f"Reduced min_body from {original_min_body*100:.1f}% to {current_min_body*100:.1f}%"
-            )
-
-        # Save to indicators dictionary so we can display it!
-        # body_pct is already stored as decimal (0.8333), convert to percentage (83.33%) for display
-        signal.indicators["body_pct"] = body_percentage * 100.0
-        signal.indicators["adx"] = adx
-        # --- BODY_PCT MUTATION FORENSIC AUDIT: Log after signal.indicators assignment ---
-        logger.debug(
-            f"[MUTATION-SIGNAL] id(signal.indicators)={id(signal.indicators)}, "
-            f"signal.indicators['body_pct']={signal.indicators.get('body_pct', 'NOT_SET')}"
-        )
-
-        # Log the raw stats to trace "Bot's thinking"
-        logger.debug(
-            f"[STRATEGY-FORENSIC] STATS: {signal.symbol} {timeframe} | "
-            f"EMA9={signal.indicators.get('ema9', 0):.4f} | "
-            f"EMA21={signal.indicators.get('ema21', 0):.4f} | "
-            f"ADX={adx:.1f} | Signal={signal.signal_type.value} | "
-            f"Body={signal.indicators.get('body_pct', 0):.2f}% (Min: {current_min_body * 100:.1f}%)"
-        )
-
-        if body_percentage < current_min_body:
-            logger.debug(f"[STRATEGY-FORENSIC] REJECTED_BODY: {signal.symbol} {timeframe} body_pct={body_percentage*100:.2f}% < min={current_min_body*100:.1f}%")
-            await self._publish_rejection(
-                signal,
-                "body_too_small",
-                {
-                    "body_pct": body_percentage * 100,
-                    "min_pct": current_min_body * 100,
-                    "ema9": signal.indicators.get("ema9"),
-                    "ema21": signal.indicators.get("ema21"),
-                    "adx": adx,
-                },
+        # [EDGE TRIGGER] Verify signal was generated from closed candle (index -2)
+        if snapshot.reference_candle_index != -2 or snapshot.candle_type != "closed":
+            logger.debug(
+                f"[STRATEGY-EDGE-TRIGGER] REJECTED_NOT_CLOSED_CANDLE: {signal.symbol} {timeframe} "
+                f"ref_index={snapshot.reference_candle_index} candle_type={snapshot.candle_type}"
             )
             return False
 
         # --- STALENESS CHECK ---
-        logger.debug(f"[STRATEGY-FORENSIC] Staleness check: reference_candle_timestamp={snapshot.reference_candle_timestamp}")
+        logger.debug(f"[STRATEGY-EDGE-TRIGGER] Staleness check: reference_candle_timestamp={snapshot.reference_candle_timestamp}")
         if await self.is_stale(snapshot.reference_candle_timestamp, timeframe, symbol=signal.symbol):
-            logger.debug(f"[STRATEGY-FORENSIC] REJECTED_STALE: {signal.symbol} {timeframe}")
+            logger.debug(f"[STRATEGY-EDGE-TRIGGER] REJECTED_STALE: {signal.symbol} {timeframe}")
             await self._publish_rejection(
                 signal,
                 "stale_signal",
                 {
                     "ema9": signal.indicators.get("ema9"),
                     "ema21": signal.indicators.get("ema21"),
-                    "adx": adx,
-                    "body_pct": body_percentage * 100.0,
+                    "adx": signal.indicators.get("adx"),
+                    "body_pct": signal.indicators.get("body_pct"),
+                    "edge_trigger": signal.indicators.get("edge_trigger"),
                 },
             )
             return False
 
         signal.validated = True
-        logger.debug(f"[STRATEGY-FORENSIC] VALIDATED: {signal.symbol} {timeframe}")
+        logger.debug(f"[STRATEGY-EDGE-TRIGGER] VALIDATED: {signal.symbol} {timeframe}")
         return True
 
     async def _publish_rejection(self, signal: Signal, reason: str, details: dict):

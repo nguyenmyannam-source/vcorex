@@ -424,7 +424,7 @@ class PositionTelegramHandler:
                     logger.warning("Failed to fetch algo TP/SL for open positions UI: {}", e)
 
             if use_mirror:
-                mirror_positions = self.engine.exchange_mirror.get_all_positions().values()
+                mirror_positions = (await self.engine.exchange_mirror.get_all_positions()).values()
                 # Snapshot order_handler positions once for O(n) lookup
                 _local_positions = self.engine.order_handler._positions
                 for m_pos in mirror_positions:
@@ -531,11 +531,12 @@ class PositionTelegramHandler:
             free_margin = 0.0
             used_margin = 0.0
 
-            if use_mirror and self.engine.exchange_mirror.get_account():
-                m_acc = self.engine.exchange_mirror.get_account()
-                total_balance = m_acc.totalEq
-                free_margin = m_acc.availEq
-                used_margin = total_balance - free_margin
+            if use_mirror:
+                m_acc = await self.engine.exchange_mirror.get_account()
+                if m_acc:
+                    total_balance = m_acc.totalEq
+                    free_margin = m_acc.availEq
+                    used_margin = total_balance - free_margin
             else:
                 try:
                     balances = await self.engine.exchange.fetch_balance()
@@ -1067,8 +1068,10 @@ class PositionTelegramHandler:
             free_margin = 0.0
             use_mirror = hasattr(self.engine, "exchange_mirror") and self.engine.exchange_mirror is not None
 
-            if use_mirror and self.engine.exchange_mirror.get_account():
-                free_margin = self.engine.exchange_mirror.get_account().availEq
+            if use_mirror:
+                m_acc = await self.engine.exchange_mirror.get_account()
+                if m_acc:
+                    free_margin = m_acc.availEq
 
             try:
                 if use_mirror:
@@ -1095,7 +1098,7 @@ class PositionTelegramHandler:
             short_count = 0
 
             if use_mirror:
-                mirror_positions = list(self.engine.exchange_mirror.get_all_positions().values())
+                mirror_positions = list((await self.engine.exchange_mirror.get_all_positions()).values())
                 active_positions = len(mirror_positions)
                 unrealized_pnl = sum(p.upl for p in mirror_positions)
                 long_count = len([p for p in mirror_positions if p.pos > 0])

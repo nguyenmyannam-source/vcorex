@@ -35,10 +35,10 @@ class ShadowValidator:
             except Exception as e:
                 logger.error(f"ShadowValidator error: {e}")
 
-    def _run_validation(self):
+    async def _run_validation(self):
         try:
             old_positions = self.position_engine.get_active_positions()
-            new_positions = self.exchange_mirror.get_all_positions()
+            new_positions = await self.exchange_mirror.get_all_positions()
 
             old_count = len(old_positions)
             new_count = len(new_positions)

@@ -42,9 +42,10 @@ class TestConfirmationModeConsistency:
         buffer.get_candles = Mock(return_value=[])
         return buffer
     
-    def test_confirmation_mode_all_actual_index_minus_two(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_mode_all_actual_index_minus_two(self, pipeline, buffer):
         """CONFIRMATION MODE: All actual_index should be -2."""
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         
         assert snapshot.indicators["ema_actual_index"] == -2
         assert snapshot.indicators["adx_actual_index"] == -2
@@ -52,14 +53,16 @@ class TestConfirmationModeConsistency:
         assert snapshot.indicators["price_actual_index"] == -2
         assert snapshot.indicators["signal_actual_index"] == -2
     
-    def test_confirmation_mode_reference_candle_index_minus_two(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_mode_reference_candle_index_minus_two(self, pipeline, buffer):
         """CONFIRMATION MODE: reference_candle_index should be -2."""
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         
         assert snapshot.reference_candle_index == -2
     
-    def test_confirmation_mode_candle_type_closed(self, pipeline, buffer):
+    @pytest.mark.asyncio
+    async def test_confirmation_mode_candle_type_closed(self, pipeline, buffer):
         """CONFIRMATION MODE: candle_type should be closed."""
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         
         assert snapshot.candle_type == "closed"

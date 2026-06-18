@@ -81,7 +81,7 @@ class ReconciliationService:
 
             # --- Check Balance Drift ---
             if self.exchange_mirror is not None:
-                local_usdt_free = self.exchange_mirror.get_free_margin()
+                local_usdt_free = await self.exchange_mirror.get_free_margin()
                 drift = abs(remote_usdt_free - local_usdt_free)
                 if drift > 0.01:
                     # Heal mirror cache with correct total vs available mapping

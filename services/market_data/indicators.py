@@ -26,6 +26,13 @@ class EMACalculator:
 
     @staticmethod
     def calculate_series(prices: List[float], period: int) -> List[float]:
+        # Defensive type guard
+        if prices is None or isinstance(prices, (int, float)):
+            logger.warning(f"[DATA-MISMATCH] prices không hợp lệ hoặc bị biến thành float: {prices}")
+            return []
+        if not isinstance(prices, list):
+            logger.warning(f"[DATA-MISMATCH] prices không phải là list: {type(prices)}")
+            return []
         if len(prices) < period:
             return []
 

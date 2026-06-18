@@ -140,7 +140,7 @@ async def test_telegram_bot_layer1_lock(telegram_bot, mock_update, mock_context)
 
         # Second request should have been rejected immediately
         mock_update2.callback_query.answer.assert_called_with(
-            text="⚠️ Một yêu cầu đóng vị thế khác đang được xử lý. Vui lòng đợi.",
+            text="⏳ Vui lòng đợi... Yêu cầu trước đang được xử lý.",
             show_alert=True
         )
 

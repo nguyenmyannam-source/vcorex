@@ -31,7 +31,8 @@ def test_settings_has_max_open_positions_and_redis_url():
     assert s.redis_url == "redis://127.0.0.1:6379/0"
 
 
-def test_indicator_pipeline_uses_settings_ema_periods():
+@pytest.mark.asyncio
+async def test_indicator_pipeline_uses_settings_ema_periods():
     mock_settings = MagicMock()
     mock_settings.min_candles = 1
     mock_settings.ema_fast_period = 12
@@ -51,7 +52,7 @@ def test_indicator_pipeline_uses_settings_ema_periods():
         buffer.get_low_prices.return_value = prices
         buffer.get_candles.return_value = tuple()
 
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         assert snapshot is not None
         assert snapshot.symbol == "BTC-USDT-SWAP"
         assert snapshot.timeframe == "15m"

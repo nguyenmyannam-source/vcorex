@@ -353,23 +353,13 @@ class BaseStrategy(ABC):
 
         return None
 
-    def get_market_snapshot(self, symbol: str, timeframe: str) -> Optional[MarketSnapshot]:
-        """Synchronous wrapper for calculate_indicators, primarily for testing and timeframe validation."""
+    async def get_market_snapshot(self, symbol: str, timeframe: str) -> Optional[MarketSnapshot]:
+        """Asynchronous wrapper for calculate_indicators, primarily for testing and timeframe validation."""
         from services.market_data_engine import MarketDataEngine
         if timeframe not in MarketDataEngine.TIMEFRAME_SECONDS:
             logger.error(f"UNKNOWN_TIMEFRAME: {timeframe}")
             raise RuntimeError(f"UNKNOWN_TIMEFRAME: {timeframe}")
-            
-        import asyncio
-        try:
-            return asyncio.run(self.calculate_indicators(symbol, timeframe))
-        except RuntimeError as e:
-            if "already running" in str(e):
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(lambda: asyncio.run(self.calculate_indicators(symbol, timeframe)))
-                    return future.result()
-            raise
+        return await self.calculate_indicators(symbol, timeframe)
 
     def can_accept_more_positions(self) -> bool:
         """Check if strategy can take on more positions based on max_positions config."""

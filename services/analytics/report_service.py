@@ -107,7 +107,7 @@ class ReportService:
             
             use_mirror = hasattr(self.engine, "exchange_mirror") and self.engine.exchange_mirror is not None
             if use_mirror:
-                mirror_positions = self.engine.exchange_mirror.get_all_positions().values()
+                mirror_positions = (await self.engine.exchange_mirror.get_all_positions()).values()
                 active_count = len(mirror_positions)
                 unrealized = sum(p.upl for p in mirror_positions)
             else:

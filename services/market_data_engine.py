@@ -1359,7 +1359,7 @@ class MarketDataEngine:
         logger.debug(f"[DEBUG-TRACE] closes len={len(closes)}, highs len={len(highs)}, lows len={len(lows)}")
         
         mock_buffer = MockBuffer(symbol, timeframe)
-        snapshot = self.indicator_pipeline.compute_indicators(mock_buffer, confirmation_candles=confirm_candles, reference_candle_index=reference_index)
+        snapshot = await self.indicator_pipeline.compute_indicators(mock_buffer, confirmation_candles=confirm_candles, reference_candle_index=reference_index)
         
         # DEBUG: Log snapshot creation status
         if not snapshot:

@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from services.position.exchange_mirror import ExchangeMirrorCache
-from core.event_bus import InProcessEventBus
+from core.event_bus import InProcessEventBus, Event
 from core.events.topics import EventTopic
 
 
@@ -66,11 +66,13 @@ async def test_is_consistent_initial_state(exchange_mirror):
 
 
 @pytest.mark.asyncio
-async def test_is_consistent_after_resync(exchange_mirror):
+async def test_is_consistent_after_resync(exchange_mirror, event_bus):
     """Test that is_consistent() returns True after successful atomic resync."""
-    # Trigger resync
-    exchange_mirror._is_syncing = True
-    await exchange_mirror._run_atomic_resync()
+    # Trigger resync via event bus
+    await event_bus.publish(Event(EventTopic.WS_RECONNECTED, data={}, source="test"))
+    
+    # Give time for debounced resync to complete
+    await asyncio.sleep(2.1) # 2 seconds debounce + a little extra
     
     # Should now be consistent
     assert exchange_mirror.is_consistent(), "Should be consistent after successful resync"
@@ -81,6 +83,7 @@ async def test_is_consistent_after_resync(exchange_mirror):
 @pytest.mark.asyncio
 async def test_resync_failure_flag(mock_exchange, event_bus):
     """Test that _last_resync_failed is set when resync fails."""
+    await event_bus.start()
     mock_exchange.fetch_account_equity = AsyncMock(side_effect=Exception("API error"))
     mock_exchange._request = AsyncMock(side_effect=Exception("API error"))
     mock_exchange.fetch_balance = AsyncMock(side_effect=Exception("API error"))
@@ -88,24 +91,24 @@ async def test_resync_failure_flag(mock_exchange, event_bus):
     mirror = ExchangeMirrorCache(event_bus, mock_exchange)
     mirror.start()
     
-    # Trigger resync - should fail
-    mirror._is_syncing = True
-    await mirror._run_atomic_resync()
+    # Trigger resync via event bus - should fail
+    await event_bus.publish(Event(EventTopic.WS_RECONNECTED, data={}, source="test"))
+    
+    # Give time for debounced resync to complete with all retries
+    # 2s debounce + 1s + 2s + 4s + 8s + 16s (exponential backoff for 5 retries)
+    await asyncio.sleep(20)
     
     # Should be marked as failed
     assert mirror._last_resync_failed
     assert not mirror.is_consistent(), "Should be inconsistent when resync fails"
     
     mirror.stop()
+    await event_bus.stop()
 
 
 @pytest.mark.asyncio
-async def test_mirror_resync_success_event(mock_exchange, event_bus):
+async def test_mirror_resync_success_event(exchange_mirror, event_bus):
     """Test that MIRROR_RESYNC_SUCCESS event is emitted after successful resync."""
-    await event_bus.start()
-    mirror = ExchangeMirrorCache(event_bus, mock_exchange)
-    mirror.start()
-    
     # Capture published events
     published_events = []
     
@@ -114,12 +117,11 @@ async def test_mirror_resync_success_event(mock_exchange, event_bus):
     
     event_bus.subscribe(capture_event, [EventTopic.MIRROR_RESYNC_SUCCESS], handler_id="test_capture")
     
-    # Trigger resync
-    mirror._is_syncing = True
-    await mirror._run_atomic_resync()
+    # Trigger resync via event bus
+    await event_bus.publish(Event(EventTopic.WS_RECONNECTED, data={}, source="test"))
     
-    # Give event bus time to process
-    await asyncio.sleep(0.5)
+    # Give time for debounced resync to complete
+    await asyncio.sleep(2.1) # 2 seconds debounce + a little extra
     
     # Should have published the success event
     assert len(published_events) > 0, "MIRROR_RESYNC_SUCCESS event not published"
@@ -127,12 +129,10 @@ async def test_mirror_resync_success_event(mock_exchange, event_bus):
     success_event = published_events[0]
     assert success_event.event_type == EventTopic.MIRROR_RESYNC_SUCCESS
     assert "positions" in success_event.data
-    
-    mirror.stop()
 
 
 @pytest.mark.asyncio
-async def test_atomic_resync_with_retry(mock_exchange, event_bus):
+async def test_atomic_resync_with_retry(exchange_mirror, mock_exchange, event_bus):
     """Test that resync retries on transient failures."""
     call_count = [0]
     
@@ -142,44 +142,42 @@ async def test_atomic_resync_with_retry(mock_exchange, event_bus):
             raise Exception("Transient error")
         return {"totalEq": 10000.0, "availEq": 5000.0}
 
-    mock_exchange.fetch_account_equity = flaky_equity
-    mock_exchange._request = AsyncMock(return_value={"data": []})
-    mock_exchange.fetch_balance = AsyncMock(return_value={
+    mock_exchange.fetch_account_equity.side_effect = flaky_equity
+    mock_exchange._request.return_value = {"data": []}
+    mock_exchange.fetch_balance.return_value = {
         "USDT": MagicMock(total=10000, free=5000),
-    })
+    }
     
-    mirror = ExchangeMirrorCache(event_bus, mock_exchange)
-    mirror.start()
+    # Trigger resync via event bus
+    await event_bus.publish(Event(EventTopic.WS_RECONNECTED, data={}, source="test"))
     
-    # Trigger resync - should retry and succeed
-    mirror._is_syncing = True
-    await mirror._run_atomic_resync()
+    # Give time for debounced resync to complete with retry
+    # 2s debounce + 1s retry wait + buffer for success
+    await asyncio.sleep(5)
     
     # Should have succeeded after retry
-    assert mirror.is_consistent()
+    assert exchange_mirror.is_consistent()
     assert call_count[0] >= 2, "Should have retried at least once"
-    
-    mirror.stop()
 
 
 @pytest.mark.asyncio
-async def test_resync_clears_old_state(mock_exchange, event_bus):
+async def test_resync_clears_old_state(exchange_mirror, mock_exchange, event_bus):
     """Test that atomic resync clears old position/account state."""
-    mirror = ExchangeMirrorCache(event_bus, mock_exchange)
-    mirror.start()
+    # Add some old data to the mirror provided by the fixture
+    exchange_mirror._positions["OLD-POS"] = {"instId": "OLD-POS", "pos": "1"}
+    assert "OLD-POS" in exchange_mirror._positions
     
-    # Add some old data
-    mirror._positions["OLD-POS"] = {"instId": "OLD-POS", "pos": "1"}
-    assert "OLD-POS" in mirror._positions
+    # Mock exchange to return empty positions for this resync
+    mock_exchange._request.return_value = {"data": []}
+
+    # Trigger resync via event bus
+    await event_bus.publish(Event(EventTopic.WS_RECONNECTED, data={}, source="test"))
     
-    # Trigger resync
-    mirror._is_syncing = True
-    await mirror._run_atomic_resync()
+    # Give time for debounced resync to complete
+    await asyncio.sleep(2.1) # 2 seconds debounce + a little extra
     
     # Old data should be cleared
-    assert "OLD-POS" not in mirror._positions, "Atomic resync should clear old positions"
-    
-    mirror.stop()
+    assert "OLD-POS" not in exchange_mirror._positions, "Atomic resync should clear old positions"
 
 
 @pytest.mark.asyncio

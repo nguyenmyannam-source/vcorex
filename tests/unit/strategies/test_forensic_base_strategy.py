@@ -28,7 +28,8 @@ class TestTimeframeValidation:
         strategy = EMACrossoverStrategy(config)
         return strategy
     
-    def test_unknown_timeframe_in_get_market_snapshot_raises_error(self, strategy):
+    @pytest.mark.asyncio
+    async def test_unknown_timeframe_in_get_market_snapshot_raises_error(self, strategy):
         """Unknown timeframe should raise RuntimeError in get_market_snapshot."""
         with patch('core.config.settings') as mock_settings:
             mock_settings.confirmation_candles_5m = 0
@@ -40,7 +41,7 @@ class TestTimeframeValidation:
             mock_settings.confirmation_candles_1m = 0
             
             with pytest.raises(RuntimeError) as exc_info:
-                strategy.get_market_snapshot("BTC-USDT-SWAP", "UNKNOWN_TF")
+                await strategy.get_market_snapshot("BTC-USDT-SWAP", "UNKNOWN_TF")
             
             assert "UNKNOWN_TIMEFRAME" in str(exc_info.value)
 

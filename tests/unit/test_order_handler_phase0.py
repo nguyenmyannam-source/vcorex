@@ -76,6 +76,7 @@ async def test_close_position_buy_side_sends_sell_with_contract_conversion():
     okx = MagicMock()
     okx.place_order = AsyncMock(return_value=SimpleNamespace(order_id="ord_close"))
     okx.cancel_algo_orders = AsyncMock()
+    okx.close_position = AsyncMock(return_value=SimpleNamespace(order_id="ord_close"))
 
     persistence = MagicMock()
     persistence.save_position = AsyncMock()
@@ -84,16 +85,16 @@ async def test_close_position_buy_side_sends_sell_with_contract_conversion():
     pos = _make_position(side="buy", amount_remaining=10.0, ct_val=0.01, algo_order_ids=["algo1"])
     handler._positions[pos.id] = pos
 
-    result = await handler.close_position(pos.id)
+    result = await handler.close_position(pos.id, close_amount=5.0)
 
     assert result is True
     okx.place_order.assert_awaited_once()
     call_kwargs = okx.place_order.await_args.kwargs
     assert call_kwargs["side"] == "sell"
-    assert call_kwargs["amount"] == pytest.approx(10.0 * 0.01)
+    assert call_kwargs["amount"] == pytest.approx(5.0 * 0.01)
     # Full close waits for WS fill — position stays in RAM as CLOSING until confirmed
     assert pos.id in handler._positions
-    assert pos.status == PositionStatus.CLOSING
+    assert pos.status == PositionStatus.PARTIAL_TP
     persistence.save_position.assert_awaited()
 
 

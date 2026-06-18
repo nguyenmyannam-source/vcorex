@@ -144,8 +144,8 @@ class RiskManager:
             # Check exchange_mirror to retrieve cached balance (fast-path)
             cache = getattr(self, "exchange_mirror", None)
             if cache is not None:
-                total_balance = cache.get_total_balance()
-                available = cache.get_free_margin()
+                total_balance = await cache.get_total_balance()
+                available = await cache.get_free_margin()
 
             if total_balance <= 0:
                 # Fallback to direct REST fetch if cache is not populated
@@ -231,7 +231,7 @@ class RiskManager:
                 existing_instId = ""
 
                 if mirror:
-                    all_pos = mirror.get_all_positions()
+                    all_pos = await mirror.get_all_positions()
                     for inst_id, p in all_pos.items():
                         pos_symbol = getattr(p, "instId", "") or inst_id
                         if pos_symbol == signal.symbol:
@@ -314,7 +314,7 @@ class RiskManager:
 
         # [FIX LỖI 3] GUARD CLAUSE: Chặn Lệnh Ma (Ghost Position Prevention)
         cache = getattr(self, "exchange_mirror", None)
-        if cache and getattr(cache, "_is_syncing", False):
+        if cache and getattr(cache, "_is_resyncing", False):
             reason = "⏳ TỪ CHỐI TÍN HIỆU: Hệ thống đang đồng bộ (Syncing) với OKX. Tạm thời chặn lệnh để tránh lỗi."
             logger.warning(f"Signal rejected for {signal.symbol}: {reason}")
             signal.risk_approved = False
@@ -344,7 +344,7 @@ class RiskManager:
                 self._portfolio_metrics.total_open_positions + self._in_flight_orders_count
             )
             if current_count > max_allowed:
-                reason = f"⛔ TỪ CHỐI TÍN HIỆU: Đã đạt giới hạn số lượng vị thế mở (Max: {max_allowed})."
+                reason = f"❌ TỪ CHỐI TÍN HIỆU: Đã đạt giới hạn số lượng vị thế mở (Max: {max_allowed})."
                 logger.warning(f"Signal rejected for {signal.symbol}: {reason}")
                 signal.risk_approved = False
                 return RiskAssessment(approved=False, reason=reason)

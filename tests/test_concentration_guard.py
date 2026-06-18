@@ -20,7 +20,7 @@ def make_mirror(positions: dict):
         p.instId = inst_id
         p.pos = pos_size   # > 0 = long, < 0 = short
         mock_positions[inst_id] = p
-    mirror.get_all_positions.return_value = mock_positions
+    mirror.get_all_positions = AsyncMock(return_value=mock_positions)
     return mirror
 
 
@@ -62,7 +62,7 @@ async def run_concentration_check(mirror_positions: dict, signal_symbol: str,
     if cached and (now - cached[0]) < 5.0:
         symbol_count, existing_side, existing_instId = cached[1], cached[2], cached[3]
     else:
-        all_pos = mirror.get_all_positions()
+        all_pos = await mirror.get_all_positions()
         symbol_count = 0
         existing_side = ""
         existing_instId = ""
@@ -167,7 +167,7 @@ async def test_cache_ttl_5s():
     now = time.time()
     cached = position_cache.get("BTC-USDT-SWAP")
     if not (cached and (now - cached[0]) < 5.0):
-        all_pos = original_mirror.get_all_positions()
+        all_pos = await original_mirror.get_all_positions()
         symbol_count = sum(1 for inst_id, p in all_pos.items()
                            if getattr(p, "instId", "") == "BTC-USDT-SWAP")
         position_cache["BTC-USDT-SWAP"] = (now, symbol_count, "long", "BTC-USDT-SWAP")
@@ -176,7 +176,7 @@ async def test_cache_ttl_5s():
     now2 = time.time()
     cached2 = position_cache.get("BTC-USDT-SWAP")
     if not (cached2 and (now2 - cached2[0]) < 5.0):
-        original_mirror.get_all_positions()  # Chỉ gọi nếu cache miss
+        await original_mirror.get_all_positions()  # Chỉ gọi nếu cache miss
 
     assert call_count == 1, f"Expected 1 mirror query, got {call_count}"
     print(f"✅ Cache TTL test PASS: mirror.get_all_positions() chỉ bị gọi {call_count} lần trong 5s")

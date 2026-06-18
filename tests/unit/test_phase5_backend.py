@@ -78,7 +78,7 @@ async def test_risk_manager_rejects_when_max_positions_exceeded():
         assessment = await rm.assess_signal(signal)
 
     assert assessment.approved is False
-    assert "Max open positions" in assessment.reason
+    assert "Đã đạt giới hạn số lượng vị thế mở" in assessment.reason
 
 
 @pytest.mark.asyncio

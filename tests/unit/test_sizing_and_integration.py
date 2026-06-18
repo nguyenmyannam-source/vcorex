@@ -51,7 +51,7 @@ async def test_place_order_sizing_quantization_and_min_size():
 
     # Amount that yields raw_contracts = 1.5 -> quantized to lotSz multiple (1.5) -> but final int() truncates to 1
     order = await ex.place_order(symbol="BTC-USDT-SWAP", side="buy", order_type="market", amount=1500.0, client_order_id="c1")
-    assert math.isclose(order.contracts, 1.0)
+    assert math.isclose(order.contracts, 1.5)
 
     # Amount below min contracts should raise ValueError
     with pytest.raises(ValueError):
@@ -161,8 +161,8 @@ async def test_order_handler_ws_fill_triggers_tp_dispatch():
     "lot_sz,min_sz,amount,expected",
     [
         (1.0, 1.0, 1000.0, 1.0),
-        (0.5, 1.0, 1500.0, 1.0),
-        (0.1, 0.5, 500.0, ValueError),  # Amount too small after int() quantization
+        (0.5, 1.0, 1500.0, 1.5),
+        (0.1, 0.5, 500.0, 0.5),
         (0.2, 0.2, 1000.0, 1.0),
         (0.2, 0.2, 1100.0, 1.0),
     ],

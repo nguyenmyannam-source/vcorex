@@ -1,13 +1,18 @@
+import re
 import sys
 import os
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from loguru import logger
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from services.position.shadow_validator import ShadowValidator
 from services.position.exchange_mirror import MirrorPosition
+from services.position.models import PositionStatus
 
 class MockPositionEngine:
     def __init__(self):
@@ -20,23 +25,22 @@ class MockExchangeMirror:
     def __init__(self):
         self.positions = {}
         
-    def get_all_positions(self):
+    async def get_all_positions(self):
         return self.positions
 
 class MockLocalPos:
-    def __init__(self, symbol, pnl, status="OPENED"):
+    def __init__(self, symbol, pnl, status=PositionStatus.OPENED):
         self.symbol = symbol
         self.pnl = pnl
         self.status = status
 
-async def main():
-    print("--- Khởi tạo môi trường Test ---")
+@pytest.mark.asyncio
+async def test_ghost_position_old_0_new_1(mocker):
     pos_engine = MockPositionEngine()
     exchange_mirror = MockExchangeMirror()
     
     validator = ShadowValidator(pos_engine, exchange_mirror)
     
-    print("\n--- Kịch bản 1: Lệch Ghost Position (Old=0, New=1) ---")
     pos_engine.positions = []
     exchange_mirror.positions = {
         "BTC-USDT-SWAP": MirrorPosition(
@@ -54,17 +58,42 @@ async def main():
         )
     }
     
-    # Run validation (should print Ghost warning)
-    print("Dự kiến: Báo cáo Lệch Ghost BTC-USDT-SWAP")
-    validator._run_validation()
+    mock_logger_warning = mocker.patch.object(logger, 'warning')
+    await validator._run_validation()
     
-    print("\n--- Kịch bản 2: Test UplLastPx vs Upl (Tránh bẫy PnL) ---")
+    assert mock_logger_warning.call_count == 2
+    warning_messages = [call_args[0][0].strip() for call_args in mock_logger_warning.call_args_list]
+    print(f"Captured warning messages: {warning_messages}") # For debugging
+    
+    expected_msg_1 = '[SHADOW DIFF] Position Count: Old=0, New=1'
+    expected_msg_2 = f"[SHADOW DIFF] Ghost: exchange has BTC-USDT-SWAP (UPL=150.5) but local OPENED missing — reconciliation will heal"
+    
+    print(f"Expected message 1: {repr(expected_msg_1)} (len: {len(expected_msg_1)})") # For debugging
+    print(f"Expected message 2: {repr(expected_msg_2)} (len: {len(expected_msg_2)})") # For debugging
+    
+    found_msg_1 = False
+    found_msg_2 = False
+    for msg in warning_messages:
+        print(f"Comparing captured: {repr(msg)} (len: {len(msg)}) with expected.") # For debugging
+        if msg == expected_msg_1:
+            found_msg_1 = True
+        if msg == expected_msg_2:
+            found_msg_2 = True
+    
+    assert found_msg_1
+    assert found_msg_2
+
+@pytest.mark.asyncio
+async def test_upl_last_px_match_prevents_pnl_diff_warning(mocker):
+    pos_engine = MockPositionEngine()
+    exchange_mirror = MockExchangeMirror()
+    
+    validator = ShadowValidator(pos_engine, exchange_mirror)
+    
     pos_engine.positions = [
         MockLocalPos("ETH-USDT-SWAP", 50.0)
     ]
     
-    # Mirror có upl=10.0 (theo markPx, bị lệch xa)
-    # Nhưng uplLastPx=50.0 (giống hệt Local, không được báo lệch)
     exchange_mirror.positions = {
         "ETH-USDT-SWAP": MirrorPosition(
             instId="ETH-USDT-SWAP",
@@ -81,10 +110,18 @@ async def main():
         )
     }
     
-    print("Dự kiến: KHÔNG báo cáo lệch PnL cho ETH vì uplLastPx khớp với Local")
-    validator._run_validation()
+    mock_logger_debug = mocker.patch.object(logger, 'debug')
+    await validator._run_validation()
     
-    print("\n--- Kịch bản 3: Lệch PnL thực sự ---")
+    mock_logger_debug.assert_not_called() # No PnL diff warning expected
+
+@pytest.mark.asyncio
+async def test_real_pnl_diff_reports_warning(mocker):
+    pos_engine = MockPositionEngine()
+    exchange_mirror = MockExchangeMirror()
+    
+    validator = ShadowValidator(pos_engine, exchange_mirror)
+    
     pos_engine.positions = [
         MockLocalPos("SOL-USDT-SWAP", 20.0)
     ]
@@ -103,10 +140,29 @@ async def main():
             uTime=0
         )
     }
-    print("Dự kiến: Báo cáo lệch PnL cho SOL vì Diff > 0.5")
-    validator._run_validation()
     
-    print("\n--- Test kết thúc ---")
+    mock_logger_debug = mocker.patch.object(logger, 'debug')
+    await validator._run_validation()
+    
+    mock_logger_debug.assert_called_once()
+    assert "[SHADOW DIFF] PnL Lệch pha SOL-USDT-SWAP" in mock_logger_debug.call_args[0][0]
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@pytest.mark.asyncio
+async def test_position_count_diff_old_12_new_0(mocker):
+    pos_engine = MockPositionEngine()
+    exchange_mirror = MockExchangeMirror()
+    
+    validator = ShadowValidator(pos_engine, exchange_mirror)
+    
+    # Simulate 12 local positions
+    pos_engine.positions = [MockLocalPos(f"SYM-{i}-USDT-SWAP", 10.0) for i in range(12)]
+    
+    # Simulate 0 exchange positions
+    exchange_mirror.positions = {}
+    
+    mock_logger_warning = mocker.patch.object(logger, 'warning')
+    await validator._run_validation()
+    
+    mock_logger_warning.assert_called_once_with(
+        f"[SHADOW DIFF] Position Count: Old=12, New=0"
+    )

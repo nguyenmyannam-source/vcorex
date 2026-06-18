@@ -28,7 +28,8 @@ class TestEMA50EMA200Removed:
         assert "ema50" not in pipeline.calculators
         assert "ema200" not in pipeline.calculators
     
-    def test_ema50_not_in_compute_indicators(self):
+    @pytest.mark.asyncio
+    async def test_ema50_not_in_compute_indicators(self):
         """EMA50 should not be computed in compute_indicators."""
         pipeline = IndicatorPipeline()
         mock_candle = Mock()
@@ -48,12 +49,13 @@ class TestEMA50EMA200Removed:
         buffer.get_low_prices = Mock(return_value=[95.0] * 500)
         buffer.get_candles = Mock(return_value=candles)
         
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         
         assert "ema50" not in snapshot.indicators
         assert "ema200" not in snapshot.indicators
     
-    def test_ema9_above_ema21_not_in_compute_indicators(self):
+    @pytest.mark.asyncio
+    async def test_ema9_above_ema21_not_in_compute_indicators(self):
         """ema9_above_ema21 should not be computed in compute_indicators."""
         pipeline = IndicatorPipeline()
         mock_candle = Mock()
@@ -73,7 +75,7 @@ class TestEMA50EMA200Removed:
         buffer.get_low_prices = Mock(return_value=[95.0] * 500)
         buffer.get_candles = Mock(return_value=candles)
         
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         
         assert "ema9_above_ema21" not in snapshot.indicators
 
@@ -81,7 +83,8 @@ class TestEMA50EMA200Removed:
 class TestConfirmationValidation:
     """Test that confirmation_candles only allows 1 (REALTIME MODE disabled in production)."""
     
-    def test_confirmation_candles_0_raises_error(self):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_0_raises_error(self):
         """confirmation_candles=0 should be rejected (REALTIME MODE disabled)."""
         pipeline = IndicatorPipeline()
         mock_candle = Mock()
@@ -97,11 +100,12 @@ class TestConfirmationValidation:
         buffer.get_candles = Mock(return_value=candles)
         
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=0)
+            await pipeline.compute_indicators(buffer, confirmation_candles=0)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=0" in str(exc_info.value)
     
-    def test_confirmation_candles_1_allowed(self):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_1_allowed(self):
         """confirmation_candles=1 should work (CONFIRMATION MODE - only supported mode)."""
         pipeline = IndicatorPipeline()
         mock_candle = Mock()
@@ -121,12 +125,13 @@ class TestConfirmationValidation:
         buffer.get_low_prices = Mock(return_value=[95.0] * 500)
         buffer.get_candles = Mock(return_value=candles)
         
-        snapshot = pipeline.compute_indicators(buffer, confirmation_candles=1)
+        snapshot = await pipeline.compute_indicators(buffer, confirmation_candles=1)
         
         assert snapshot.reference_candle_index == -2
         assert snapshot.candle_type == "closed"
     
-    def test_confirmation_candles_2_raises_error(self):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_2_raises_error(self):
         """confirmation_candles=2 should raise RuntimeError."""
         pipeline = IndicatorPipeline()
         mock_candle = Mock()
@@ -142,11 +147,12 @@ class TestConfirmationValidation:
         buffer.get_candles = Mock(return_value=candles)
         
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=2)
+            await pipeline.compute_indicators(buffer, confirmation_candles=2)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=2" in str(exc_info.value)
     
-    def test_confirmation_candles_negative_raises_error(self):
+    @pytest.mark.asyncio
+    async def test_confirmation_candles_negative_raises_error(self):
         """confirmation_candles=-1 should raise RuntimeError."""
         pipeline = IndicatorPipeline()
         buffer = Mock()
@@ -158,7 +164,7 @@ class TestConfirmationValidation:
         buffer.get_candles = Mock(return_value=[])
         
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=-1)
+            await pipeline.compute_indicators(buffer, confirmation_candles=-1)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=-1" in str(exc_info.value)
 
@@ -166,7 +172,8 @@ class TestConfirmationValidation:
 class TestHiddenFallbackRemoved:
     """Test that hidden fallback is removed and raises RuntimeError."""
     
-    def test_invalid_confirmation_candles_raises_error(self):
+    @pytest.mark.asyncio
+    async def test_invalid_confirmation_candles_raises_error(self):
         """Invalid confirmation_candles should raise RuntimeError."""
         # reference_candle_index is now hardcoded to -2, only confirmation_candles=1 is allowed
         pipeline = IndicatorPipeline()
@@ -189,7 +196,7 @@ class TestHiddenFallbackRemoved:
         
         # Invalid case: confirmation_candles=0 should raise error
         with pytest.raises(RuntimeError) as exc_info:
-            pipeline.compute_indicators(buffer, confirmation_candles=0)
+            await pipeline.compute_indicators(buffer, confirmation_candles=0)
         
         assert "UNSUPPORTED_CONFIRMATION_CANDLES=0" in str(exc_info.value)
 
