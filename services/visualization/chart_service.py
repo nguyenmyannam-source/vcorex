@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import os
 from datetime import datetime, timezone
 from loguru import logger
@@ -60,6 +61,11 @@ class ChartService:
             if not candles or len(candles) < 20:
                 logger.warning(f"ChartService: Not enough candles to draw chart for {symbol}")
                 return
+            
+            # [THREAD-SAFETY] Create immutable snapshots before passing to worker thread
+            # This prevents RuntimeError: list changed size during iteration if main loop updates candles
+            candles_copy = copy.deepcopy(candles)  # Deep copy to ensure complete isolation
+            snapshot_copy = copy.deepcopy(snapshot_dict) if snapshot_dict else None
                 
             # Capture event loop reference BEFORE entering thread
             loop = asyncio.get_running_loop()
@@ -67,18 +73,19 @@ class ChartService:
             # Run rendering in thread pool to avoid blocking async loop
             await asyncio.to_thread(
                 self._generate_and_emit_chart,
-                symbol, timeframe, side, entry_price, candles, snapshot_dict, loop
+                symbol, timeframe, side, entry_price, candles_copy, snapshot_copy, loop
             )
             
         except Exception as e:
             logger.error(f"ChartService: Failed to process approved signal - {e}")
 
-    def _generate_and_emit_chart(self, symbol, timeframe, side, entry_price, candles, snapshot_dict, loop):
+    def _sync_render_chart_process(self, symbol, timeframe, side, candles, snapshot_dict):
         """
-        Runs synchronously in a separate thread. Generates the OKX Premium 3-panel chart.
+        Synchronous function that performs all blocking CPU operations for chart rendering.
+        This runs in a worker thread to avoid blocking the main event loop.
         """
         try:
-            logger.exception("[CRITICAL-CHART] Starting OKX Premium 3-panel chart generation")
+            logger.info("[CRITICAL-CHART] Starting OKX Premium 3-panel chart generation")
             
             # Extract indicators from snapshot_dict
             indicators = {}
@@ -102,7 +109,7 @@ class ChartService:
                 last_candle = candles[-1]
                 body_pct = abs(last_candle.close - last_candle.open) / last_candle.open * 100 if last_candle.open > 0 else 0.0
             
-            # Call OKX Premium 3-panel chart generator
+            # Call OKX Premium 3-panel chart generator (BLOCKING CPU OPERATION)
             filepath = generate_entry_chart_sync(
                 symbol=symbol,
                 timeframe=timeframe,
@@ -114,9 +121,25 @@ class ChartService:
             
             if filepath is None:
                 logger.error("[CRITICAL-CHART] OKX Premium chart generator returned None - chart generation failed")
-                return
+                return None
             
             logger.info(f"[CRITICAL-CHART] OKX Premium 3-panel chart generated successfully at {filepath}")
+            return filepath
+            
+        except Exception as e:
+            logger.exception(f"[CRITICAL-CHART] FAILED to generate OKX Premium 3-panel chart for {symbol}: {e}")
+            return None
+
+    def _generate_and_emit_chart(self, symbol, timeframe, side, entry_price, candles, snapshot_dict, loop):
+        """
+        Runs synchronously in a separate thread. Coordinates chart generation and event emission.
+        """
+        try:
+            # Offload blocking CPU operations to synchronous function
+            filepath = self._sync_render_chart_process(symbol, timeframe, side, candles, snapshot_dict)
+            
+            if filepath is None:
+                return
             
             # Emit CHART_GENERATED event back to async loop
             asyncio.run_coroutine_threadsafe(
@@ -125,7 +148,7 @@ class ChartService:
             )
             
         except Exception as e:
-            logger.exception(f"[CRITICAL-CHART] FAILED to generate OKX Premium 3-panel chart for {symbol}: {e}")
+            logger.exception(f"[CRITICAL-CHART] FAILED to coordinate chart generation for {symbol}: {e}")
 
     async def _emit_chart_event(self, symbol, timeframe, side, filepath):
         """Helper to emit the generated chart back to the main loop."""

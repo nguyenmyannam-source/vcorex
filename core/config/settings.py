@@ -184,7 +184,8 @@ class Settings(BaseSettings):
     max_risk_allowed_pct: float = Field(default=0.20, description="ACTIVE: Maximum risk per trade as % of total equity (enforced when production_risk_mode=true)")
     max_symbol_concentration: float = Field(
         default=1.0,
-        description="ACTIVE: Max concurrent positions per symbol (count). Default: 1",
+        ge=1.0,  # Ensure minimum value is 1.0
+        description="SAFEGUARD: Strictly limited to maximum 1 position per symbol to prevent over-exposure",
     )
     max_open_positions: int = Field(
         default=9999,

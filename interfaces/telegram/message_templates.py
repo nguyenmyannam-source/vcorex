@@ -2263,11 +2263,15 @@ class MessageTemplates:
         c3_count = history_data.get("c3_count", 0)
         recent = history_data.get("recent_signals", [])
         dominant = history_data.get("dominant_issue")
+        network_latency = history_data.get("network_latency", 0)  # Độ trễ mạng (ms)
 
         # Health warning
         health_warning = ""
         if dominant:
-            health_warning = f"\n⚠️ <b>Cảnh báo:</b> Kết nối sàn đang bất ổn (Chiếm ưu thế: <i>{dominant}</i>)\n"
+            if network_latency > 0:
+                health_warning = f"\n⚠️ <b>MẠNG LAG:</b> Kết nối OKX trễ cao (<code>{network_latency}ms</code>) | Phát hiện tín hiệu trễ.\n"
+            else:
+                health_warning = f"\n⚠️ <b>Cảnh báo:</b> Kết nối sàn đang bất ổn (Chiếm ưu thế: <i>{dominant}</i>)\n"
 
         # Insight list
         insight_lines = []
@@ -2290,7 +2294,7 @@ class MessageTemplates:
             "🛡️ " + MessageTemplates.format_title("RISK & STRATEGY DASHBOARD") +
             f"⏱️ <b>Lần quét nến gần nhất:</b> <code>{last_scan}</code>\n"
             "━━━\n"
-            "📊 <b>THỐNG KÊ LỆNH BỎ QUA & LỆNH CHỜ:</b>\n"
+            "📊 <b>THỐNG KÊ TÍCH LŨY (TỪ LÚC RESTART):</b>\n"
             f"├─ 🛡️ <b>C1 (Logic & Timing):</b> <code>{c1_count}</code> (Trễ, Cooldown, Trùng lặp)\n"
             f"├─ 🛑 <b>C2 (Risk Management):</b> <code>{c2_count}</code> (Quá tải, Hết Margin, Rủi ro)\n"
             f"└─ 🎯 <b>C3 (Entry Readiness):</b> <code>{c3_count}</code> (Chờ Entry chưa đạt)\n"

@@ -80,7 +80,7 @@ Chạy lệnh sau tại thư mục gốc của dự án để tự động tạo
    Remove-Item -Recurse -Force .\\venv -ErrorAction SilentlyContinue
 
    # 2. Khởi tạo venv mới TỪ ĐẦU
-   py -3 -m venv venv hoặc \\\& "D:\\\\Python\\\\python.exe" -m venv venv & "E:\python3.12\python.exe" -m venv venv
+   py -3 -m venv venv hoặc \\\& "D:\\\\Python\\\\python.exe" -m venv venv & "E:\python3.12\python.exe" -m venv ven; & "D:\python-3.12.9\python.exe" -m venv venv
 
    # 3. Kích hoạt venv
    .\\venv\\Scripts\\Activate.ps1

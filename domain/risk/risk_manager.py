@@ -53,6 +53,11 @@ class RiskManager:
         self._position_cache: dict = {}
         self._position_cache_ttl = 5.0
         self._position_cache_max_age = 30.0
+        
+        # [ANTI-DUPLICATE GUARD] Cache timestamp tín hiệu gần nhất để chặn trùng lặp
+        # _signal_timestamp_cache[symbol] = (timestamp, signal_type, timeframe)
+        self._signal_timestamp_cache: dict = {}
+        self._signal_throttle_window = 5.0  # 5 giây - chặn tín hiệu trùng lặp trong cùng cửa sổ
         logger.info("RiskManager initialized")
 
     def _purge_stale_position_cache(self, now: float) -> None:
@@ -64,6 +69,17 @@ class RiskManager:
         ]
         for symbol in stale_symbols:
             del self._position_cache[symbol]
+
+    def _purge_stale_signal_cache(self, now: float) -> None:
+        """Drop stale signal timestamp cache entries to avoid memory leak."""
+        # Cache entries older than 1 hour (3600 seconds) are considered stale
+        stale_symbols = [
+            symbol
+            for symbol, (timestamp, *_rest) in self._signal_timestamp_cache.items()
+            if now - timestamp > 3600.0
+        ]
+        for symbol in stale_symbols:
+            del self._signal_timestamp_cache[symbol]
 
     async def initialize(self) -> None:
         """Initialize risk manager and start periodic portfolio updates."""
@@ -213,7 +229,7 @@ class RiskManager:
 
     async def _check_symbol_concentration(self, signal: Signal) -> Optional[RiskAssessment]:
         """Block when symbol already has max concurrent positions (demo + production)."""
-        max_concentration = int(getattr(settings, "max_symbol_concentration", 1))
+        max_concentration = int(getattr(self.settings, "max_symbol_concentration", 1))
         if max_concentration >= 9999:
             return None
 
@@ -231,22 +247,45 @@ class RiskManager:
                 existing_instId = ""
 
                 if mirror:
-                    all_pos = await mirror.get_all_positions()
-                    for inst_id, p in all_pos.items():
-                        pos_symbol = getattr(p, "instId", "") or inst_id
-                        if pos_symbol == signal.symbol:
-                            symbol_count += 1
-                            pos_size = getattr(p, "pos", 0.0)
-                            existing_side = "long" if pos_size > 0 else "short"
-                            existing_instId = inst_id
+                    try:
+                        all_pos = await mirror.get_all_positions()
+                        for inst_id, p in all_pos.items():
+                            pos_symbol = getattr(p, "instId", "") or inst_id
+                            if pos_symbol == signal.symbol:
+                                symbol_count += 1
+                                pos_size = getattr(p, "pos", 0.0)
+                                existing_side = "long" if pos_size > 0 else "short"
+                                existing_instId = inst_id
+                    except Exception as e:
+                        logger.warning(f"[CONCENTRATION GUARD] Failed to fetch positions from mirror: {e}")
+                        # Fallback to exchange on mirror error
+                        try:
+                            positions = await self.exchange.fetch_positions()
+                            for p in positions:
+                                p_symbol = p.symbol if hasattr(p, "symbol") else ""
+                                if p_symbol == signal.symbol:
+                                    symbol_count += 1
+                                    existing_side = str(getattr(p, "side", ""))
+                                    existing_instId = getattr(p, "position_id", signal.symbol)
+                        except Exception as e2:
+                            logger.error(f"[CONCENTRATION GUARD] Failed to fetch positions from exchange: {e2}")
+                            # [FAIL-CLOSED] Reject signal when both mirror and exchange are unreachable
+                            signal.risk_approved = False
+                            return RiskAssessment(
+                                approved=False,
+                                reason="⛔ TỪ CHỐI TÍN HIỆU: Hệ thống mù dữ liệu exposure (Cả Mirror và Exchange API đều mất kết nối). Chặn lệnh để bảo vệ tài khoản."
+                            )
                 else:
-                    positions = await self.exchange.fetch_positions()
-                    for p in positions:
-                        p_symbol = p.symbol if hasattr(p, "symbol") else ""
-                        if p_symbol == signal.symbol:
-                            symbol_count += 1
-                            existing_side = str(getattr(p, "side", ""))
-                            existing_instId = getattr(p, "position_id", signal.symbol)
+                    try:
+                        positions = await self.exchange.fetch_positions()
+                        for p in positions:
+                            p_symbol = p.symbol if hasattr(p, "symbol") else ""
+                            if p_symbol == signal.symbol:
+                                symbol_count += 1
+                                existing_side = str(getattr(p, "side", ""))
+                                existing_instId = getattr(p, "position_id", signal.symbol)
+                    except Exception as e:
+                        logger.error(f"[CONCENTRATION GUARD] Failed to fetch positions from exchange: {e}")
 
                 self._position_cache[signal.symbol] = (now, symbol_count, existing_side, existing_instId)
 
@@ -303,6 +342,118 @@ class RiskManager:
             )
         return None
 
+    async def _check_pending_orders(self, signal: Signal) -> Optional[RiskAssessment]:
+        """Block when there are pending orders for the same symbol and direction."""
+        try:
+            mirror = getattr(self, "exchange_mirror", None)
+            if mirror:
+                # Kiểm tra từ mirror cache
+                try:
+                    all_orders = await mirror.get_all_orders()
+                    for order_id, order in all_orders.items():
+                        order_symbol = getattr(order, "instId", "") or getattr(order, "symbol", "")
+                        if order_symbol == signal.symbol:
+                            # Kiểm tra trạng thái lệnh chờ (pending, open, etc.)
+                            order_state = getattr(order, "state", "") or getattr(order, "status", "")
+                            if order_state.lower() in ("pending", "open", "live", "new"):
+                                # Kiểm tra hướng lệnh
+                                order_side = getattr(order, "side", "").lower()
+                                signal_side = signal.signal_type.value.lower() if hasattr(signal.signal_type, "value") else str(signal.signal_type).lower()
+                                
+                                if order_side == signal_side:
+                                    reason = f"⛔ TỪ CHỐI TÍN HIỆU: Đã có lệnh chờ ({order_side.upper()}) đang treo trên sàn cho {signal.symbol}. Hủy lệnh cũ hoặc chờ khớp."
+                                    logger.warning(f"[ANTI-DUPLICATE] {reason}")
+                                    signal.risk_approved = False
+                                    return RiskAssessment(approved=False, reason=reason)
+                except Exception as e:
+                    logger.warning(f"[ANTI-DUPLICATE GUARD] Failed to fetch orders from mirror: {e}")
+                    # Fallback to exchange on mirror error
+                    try:
+                        orders = await self.exchange.fetch_orders(signal.symbol)
+                        for order in orders:
+                            order_state = order.status if hasattr(order, "status") else ""
+                            if order_state.lower() in ("open", "pending", "new"):
+                                order_side = order.side.lower() if hasattr(order, "side") else ""
+                                signal_side = signal.signal_type.value.lower() if hasattr(signal.signal_type, "value") else str(signal.signal_type).lower()
+                                
+                                if order_side == signal_side:
+                                    reason = f"⛔ TỪ CHỐI TÍN HIỆU: Đã có lệnh chờ ({order_side.upper()}) đang treo trên sàn cho {signal.symbol}. Hủy lệnh cũ hoặc chờ khớp."
+                                    logger.warning(f"[ANTI-DUPLICATE] {reason}")
+                                    signal.risk_approved = False
+                                    return RiskAssessment(approved=False, reason=reason)
+                    except Exception as e2:
+                        logger.error(f"[ANTI-DUPLICATE GUARD] Failed to fetch orders from exchange: {e2}")
+                        # [FAIL-CLOSED] Reject signal when both mirror and exchange are unreachable
+                        signal.risk_approved = False
+                        return RiskAssessment(
+                            approved=False,
+                            reason="⛔ TỪ CHỐI TÍN HIỆU: Hệ thống mù dữ liệu exposure (Cả Mirror và Exchange API đều mất kết nối). Chặn lệnh để bảo vệ tài khoản."
+                        )
+            else:
+                # Fallback: kiểm tra từ exchange
+                try:
+                    orders = await self.exchange.fetch_orders(signal.symbol)
+                    for order in orders:
+                        order_state = order.status if hasattr(order, "status") else ""
+                        if order_state.lower() in ("open", "pending", "new"):
+                            order_side = order.side.lower() if hasattr(order, "side") else ""
+                            signal_side = signal.signal_type.value.lower() if hasattr(signal.signal_type, "value") else str(signal.signal_type).lower()
+                            
+                            if order_side == signal_side:
+                                reason = f"⛔ TỪ CHỐI TÍN HIỆU: Đã có lệnh chờ ({order_side.upper()}) đang treo trên sàn cho {signal.symbol}. Hủy lệnh cũ hoặc chờ khớp."
+                                logger.warning(f"[ANTI-DUPLICATE] {reason}")
+                                signal.risk_approved = False
+                                return RiskAssessment(approved=False, reason=reason)
+                except Exception as e:
+                    logger.debug(f"Pending orders check skipped (exchange error): {e}")
+        except Exception as e:
+            logger.error(f"[ANTI-DUPLICATE GUARD] Failed to check pending orders: {e}", exc_info=True)
+            signal.risk_approved = False
+            return RiskAssessment(
+                approved=False,
+                reason=f"⛔ TỪ CHỐI TÍN HIỆU: Lỗi kiểm tra lệnh chờ ({e}). Tạm thời chặn lệnh để an toàn.",
+            )
+        return None
+
+    async def _check_signal_throttling(self, signal: Signal) -> Optional[RiskAssessment]:
+        """Block when same signal arrives too frequently (within throttle window)."""
+        try:
+            now = time.time()
+            signal_key = signal.symbol
+            
+            # [MEMORY LEAK PREVENTION] Purge stale cache entries periodically
+            self._purge_stale_signal_cache(now)
+            
+            # Lấy timestamp tín hiệu gần nhất
+            cached = self._signal_timestamp_cache.get(signal_key)
+            
+            if cached:
+                last_timestamp, last_signal_type, last_timeframe = cached
+                
+                # Kiểm tra nếu tín hiệu mới đến trong cửa sổ thời gian chặn
+                if now - last_timestamp < self._signal_throttle_window:
+                    signal_type_str = signal.signal_type.value if hasattr(signal.signal_type, "value") else str(signal.signal_type)
+                    timeframe = getattr(signal, "timeframe", "N/A")
+                    
+                    reason = f"⛔ TỪ CHỐI TÍN HIỆU: Tín hiệu trùng lặp do tần suất quá nhanh ({signal.symbol} | {signal_type_str.upper()} | {timeframe}). Chặn trong {self._signal_throttle_window}s kể từ lệnh trước."
+                    logger.warning(f"[ANTI-DUPLICATE] {reason}")
+                    signal.risk_approved = False
+                    return RiskAssessment(approved=False, reason=reason)
+            
+            # Cập nhật cache với tín hiệu mới
+            signal_type_str = signal.signal_type.value if hasattr(signal.signal_type, "value") else str(signal.signal_type)
+            timeframe = getattr(signal, "timeframe", "N/A")
+            self._signal_timestamp_cache[signal_key] = (now, signal_type_str, timeframe)
+            
+        except Exception as e:
+            logger.error(f"[ANTI-DUPLICATE GUARD] Failed to check signal throttling: {e}", exc_info=True)
+            signal.risk_approved = False
+            return RiskAssessment(
+                approved=False,
+                reason=f"⛔ TỪ CHỐI TÍN HIỆU: Lỗi kiểm tra tần suất tín hiệu ({e}). Tạm thời chặn lệnh để an toàn.",
+            )
+        return None
+
     async def assess_signal(self, signal: Signal) -> RiskAssessment:
         """
         Assess if a signal passes all risk checks.
@@ -337,6 +488,16 @@ class RiskManager:
         concentration = await self._check_symbol_concentration(signal)
         if concentration is not None:
             return concentration
+
+        # [ANTI-DUPLICATE GUARD] Lớp 2: Kiểm tra lệnh chờ (Pending Orders Check)
+        pending_check = await self._check_pending_orders(signal)
+        if pending_check is not None:
+            return pending_check
+
+        # [ANTI-DUPLICATE GUARD] Lớp 3: Khóa thời gian thụ tinh (Timestamp Throttling)
+        throttle_check = await self._check_signal_throttling(signal)
+        if throttle_check is not None:
+            return throttle_check
 
         max_allowed = self._calculate_max_positions()
         if max_allowed < 9999:
