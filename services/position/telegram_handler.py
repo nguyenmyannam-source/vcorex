@@ -415,6 +415,25 @@ class PositionTelegramHandler:
 
             # --- USE EXCHANGE MIRROR AS SINGLE SOURCE OF TRUTH ---
             use_mirror = hasattr(self.engine, "exchange_mirror") and self.engine.exchange_mirror is not None
+            
+            # Cross-validation: Check for data desync with exchange state
+            if use_mirror and action == "open_positions":
+                try:
+                    mirror_positions_count = len((await self.engine.exchange_mirror.get_all_positions()).values())
+                    local_positions_count = len([p for p in self.engine.order_handler._positions.values() 
+                                               if p.status in [PositionStatus.OPENED, PositionStatus.PARTIAL_TP, 
+                                                              PositionStatus.PENDING_SUBMIT, PositionStatus.PENDING_RECONCILE]])
+                    
+                    # If counts differ significantly, trigger sync
+                    if abs(mirror_positions_count - local_positions_count) > 0:
+                        logger.warning(
+                            f"[DATA_DESYNC] Position count mismatch: Mirror={mirror_positions_count}, Local={local_positions_count}. "
+                            f"Triggering sync before UI render."
+                        )
+                        # Trigger reconciliation sync
+                        await self.engine.exchange_mirror.sync_positions()
+                except Exception as sync_err:
+                    logger.warning(f"[DATA_VALIDATION] Failed cross-validation sync: {sync_err}")
 
             algo_tpsl_map: Dict[str, Any] = {}
             if use_mirror:

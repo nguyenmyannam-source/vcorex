@@ -486,6 +486,13 @@ class TelegramBot:
             except Exception as e:
                 if "Message is not modified" not in str(e):
                     logger.error(f"Error editing menu message: {e}")
+                    try:
+                        await query.answer()
+                        await query.message.reply_text(
+                            "❌ Hệ thống gặp sự cố tạm thời khi xử lý lệnh. Vui lòng thử lại hoặc kiểm tra Nhật ký!"
+                        )
+                    except Exception:
+                        pass
 
     # ================ EVENT HANDLERS (FROM SYSTEM) ================
 
@@ -740,6 +747,13 @@ class TelegramBot:
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Error in control callback '{action}': {e}")
+                try:
+                    await query.answer()
+                    await query.message.reply_text(
+                        "❌ Hệ thống gặp sự cố tạm thời khi xử lý lệnh. Vui lòng thử lại hoặc kiểm tra Nhật ký!"
+                    )
+                except Exception:
+                    pass
 
     async def _handle_confirm_callback(self, query, action: str) -> None:
         """Handle confirmation of dangerous actions."""
@@ -796,6 +810,13 @@ class TelegramBot:
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Error in confirm callback '{action}': {e}")
+                try:
+                    await query.answer()
+                    await query.message.reply_text(
+                        "❌ Hệ thống gặp sự cố tạm thời khi xử lý lệnh. Vui lòng thử lại hoặc kiểm tra Nhật ký!"
+                    )
+                except Exception:
+                    pass
 
     # ================ POSITION MANAGEMENT HANDLERS ================
     async def _handle_position_callback(self, query, data: str) -> None:
@@ -948,6 +969,13 @@ class TelegramBot:
                     self._position_close_futures.pop(correlation_id, None)
         except Exception as e:
             logger.error(f"Position confirm handler error for {position_id}: {e}")
+            try:
+                await query.answer()
+                await query.message.reply_text(
+                    "❌ Hệ thống gặp sự cố tạm thời khi xử lý lệnh. Vui lòng thử lại hoặc kiểm tra Nhật ký!"
+                )
+            except Exception:
+                pass
 
     async def _handle_position_token_callback(self, query, data: str) -> None:
         """Handle position close confirmation/cancellation via tokens."""
@@ -989,11 +1017,26 @@ class TelegramBot:
     async def _handle_trading_callback(self, query, action: str) -> None:
         """Request trading data from the system."""
         try:
+            await query.answer()
+            
             if action == "manual_order":
                 await query.edit_message_text(
                     text=MessageTemplates.get_manual_order_instruction(),
                     parse_mode="HTML",
                     reply_markup=TelegramKeyboards.get_back_to_main_menu(),
+                )
+                return
+            
+            if action == "capital_management":
+                # Temporary capital management dashboard
+                await query.edit_message_text(
+                    text="⏳ Đang tải thông tin Quản lý Vốn...",
+                    reply_markup=TelegramKeyboards.get_loading_keyboard(),
+                )
+                await self._dispatcher.publish_request_event(
+                    EventTopic.TELEGRAM_REQUEST_TRADING_DATA,
+                    "capital_management",
+                    query.message.message_id,
                 )
                 return
 
@@ -1009,6 +1052,12 @@ class TelegramBot:
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Error in trading callback '{action}': {e}")
+            try:
+                await query.message.reply_text(
+                    "❌ Hệ thống gặp sự cố tạm thời khi xử lý lệnh. Vui lòng thử lại hoặc kiểm tra Nhật ký!"
+                )
+            except Exception:
+                pass
 
     async def _handle_system_callback(self, query, action: str) -> None:
         """Request system data from the system."""
@@ -1068,6 +1117,13 @@ class TelegramBot:
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Error in settings callback '{action}': {e}")
+                try:
+                    await query.answer()
+                    await query.message.reply_text(
+                        "❌ Hệ thống gặp sự cố tạm thời khi xử lý lệnh. Vui lòng thử lại hoặc kiểm tra Nhật ký!"
+                    )
+                except Exception:
+                    pass
 
     async def _handle_radar_callback(self, query, action: str) -> None:
         """Handle radar watchlist limit adjustments (Top 5/10/15/20)."""
