@@ -1,0 +1,38 @@
+# ==================== WATCHLIST CONFIGURATION ====================
+# Top cryptocurrencies by market cap (OKX Perpetual Swaps)
+# Format: SYMBOL-USDT-SWAP | Rank | Market Cap Group
+# ================================================================
+
+WATCHLIST=[
+    # TOP 5 - Blue Chips (Highest Liquidity)
+    "BTC-USDT-SWAP",   # Bitcoin #1
+    "ETH-USDT-SWAP",   # Ethereum #2
+    "SOL-USDT-SWAP",   # Solana #5
+    "BNB-USDT-SWAP",   # Binance Coin #4
+    "XRP-USDT-SWAP",   # XRP #6
+    
+    # TOP 6-10 - Major Altcoins
+    "ADA-USDT-SWAP",   # Cardano #9
+    "DOGE-USDT-SWAP",  # Dogecoin #8
+    "TON-USDT-SWAP",   # Toncoin #9
+    "AVAX-USDT-SWAP",  # Avalanche #10
+    "LINK-USDT-SWAP",  # Chainlink #13
+    
+    # TOP 11-15 - Established Projects
+    "TRX-USDT-SWAP",   # TRON #11
+    "DOT-USDT-SWAP",   # Polkadot #14
+    "BCH-USDT-SWAP",   # Bitcoin Cash #16
+    "NEAR-USDT-SWAP",  # NEAR Protocol #17
+    "LTC-USDT-SWAP",   # Litecoin #18
+    
+    # TOP 16-20 - Growth & DeFi
+    "ATOM-USDT-SWAP",  # Cosmos #46
+    "ARB-USDT-SWAP",   # Arbitrum #34
+    "FIL-USDT-SWAP",   # Filecoin #26
+    "SUI-USDT-SWAP",   # Sui #38
+    "ETC-USDT-SWAP",   # Ethereum Classic #21
+]
+
+# Radar Limit: Number of coins to actively scan from watchlist
+# Recommended: 5 (Conservative) | 10 (Balanced) | 15 (Aggressive) | 20 (Maximum)
+RADAR_LIMIT=5

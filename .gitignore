@@ -1,0 +1,105 @@
+# ==========================================
+# Python
+# ==========================================
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ==========================================
+# Testing & Coverage
+# ==========================================
+.pytest_cache/
+.coverage*
+coverage.xml
+htmlcov/
+
+# ==========================================
+# Environment
+# ==========================================
+.env
+.env.local
+.env.production
+.env.staging
+!.env.example
+
+# ==========================================
+# Logs (all levels)
+# ==========================================
+logs*/
+*.log
+
+# ==========================================
+# Runtime Data (NEVER commit)
+# ==========================================
+
+# audit runtime data
+audit_archive/*
+!audit_archive/.gitkeep
+
+# charts runtime data
+data/charts/*
+data/temp_charts/*
+!data/charts/.gitkeep
+!data/temp_charts/.gitkeep
+
+# audit logs docs (runtime)
+docs/audit_logs/*
+!docs/audit_logs/.gitkeep
+
+# ==========================================
+# Runtime State (trading bot)
+# ==========================================
+**/signal_state.json
+**/state.json
+**/positions_state.json
+**/runtime_state.json
+
+# ==========================================
+# IDE
+# ==========================================
+.vscode/
+.idea/
+.trae/
+
+# ==========================================
+# Build & Packaging
+# ==========================================
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# ==========================================
+# Operating System
+# ==========================================
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# Python Type Checkers
+# ==========================================
+.mypy_cache/
+.pyre/
+.pytype/
+
+# ==========================================
+# Jupyter
+# ==========================================
+.ipynb_checkpoints/
+
+# ==========================================
+# Database (safety)
+# ==========================================
+*.sqlite
+*.db
+*.db-journal
+
+# ==========================================
+# Temporary Files
+# ==========================================
+*.tmp
+*.temp
+*.bak
+*.swp

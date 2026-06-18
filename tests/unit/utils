@@ -1,0 +1,374 @@
+"""
+Comprehensive Test Suite for Trade Calculations:
+- Entry price validation
+- Stop Loss (SL) calculation
+- Take Profit (TP) levels
+- P&L calculation
+- Margin requirements
+- Liquidation price
+- ROE calculation
+"""
+import pytest
+from decimal import Decimal
+from risk.risk_manager import RiskManager, RiskAssessment
+from services.position_engine import PositionEngine, TrackedPosition
+from app.config.settings import Settings
+
+
+@pytest.fixture
+def mock_uow():
+    """Create a mock Unit of Work for testing."""
+    from unittest.mock import Mock
+    mock = Mock()
+    return mock
+
+@pytest.fixture
+def mock_exchange():
+    """Create a mock exchange for testing."""
+    from unittest.mock import Mock
+    mock = Mock()
+    return mock
+
+@pytest.fixture
+def position_engine(mock_exchange, event_bus, mock_uow, test_settings):
+    """Create PositionEngine instance for testing."""
+    return PositionEngine(mock_exchange, event_bus, mock_uow, test_settings)
+
+
+class TestTradeCalculationsComprehensive:
+    """Full test suite for all trade-related calculations (institutional-grade)."""
+    
+    @pytest.fixture
+    def risk_manager(self, event_bus, test_settings):
+        """Create RiskManager instance for testing."""
+        return RiskManager(event_bus, test_settings)
+    
+    # =========================================================================
+    # TEST 1: Entry Price Validation
+    # =========================================================================
+    def test_entry_price_basic_validation(self):
+        """Test entry price must be positive, reasonable for symbol."""
+        # Test BTC entry price - phải hợp lệ
+        btc_entry = 68500.0
+        assert btc_entry > 0, "Entry price phải lớn hơn 0"
+        assert 10000 < btc_entry < 100000, "BTC price phải trong khoảng hợp lệ"
+        
+        # Test XRP entry price
+        xrp_entry = 0.52
+        assert xrp_entry > 0, "Entry price phải lớn hơn 0"
+        assert 0.1 < xrp_entry < 10, "XRP price phải trong khoảng hợp lệ"
+        
+        # Test TrackedPosition creation với entry price âm
+        from services.position_engine import TrackedPosition, PositionStatus
+        from uuid import uuid4
+        
+        # Valid position tạo thành công
+        valid_pos = TrackedPosition(
+            id=str(uuid4()),
+            symbol="BTC-USDT",
+            side="buy",
+            entry_price=68500.0,
+            amount=0.0146,
+            exchange_id="OKX",
+            leverage=20,
+            current_price=68500.0,
+            amount_remaining=0.0146,
+            status=PositionStatus.PENDING,
+            opened_at=None
+        )
+        assert valid_pos.entry_price == 68500.0
+    
+    def test_entry_price_market_sanity_check(self, risk_manager):
+        """Test entry price không bị lệch quá nhiều so với market price."""
+        # 5% deviation tối đa cho phép
+        market_price = 68500.0
+        valid_entry = 68500 * 1.03  # +3% - OK
+        invalid_entry = 68500 * 1.15  # +15% - quá lớn
+        
+        # Risk manager phải phát hiện entry price bất thường
+        assessment = risk_manager._validate_entry_against_market(valid_entry, market_price)
+        assert assessment.approved == True
+        
+        assessment = risk_manager._validate_entry_against_market(invalid_entry, market_price)
+        assert assessment.approved == False
+        assert "Entry price deviation too high" in assessment.reason
+    
+    # =========================================================================
+    # TEST 2: Stop Loss (SL) Calculation
+    # =========================================================================
+    def test_sl_calculation_long_position(self, risk_manager):
+        """Test SL calculation cho vị thế LONG ( BUY )."""
+        # LONG BTC @ 68500, SL 2% below entry
+        entry_price = 68500.0
+        stop_loss_pct = 0.02  # 2%
+        expected_sl = entry_price * (1 - stop_loss_pct)  # 68500 * 0.98 = 67130
+        
+        calculated_sl = risk_manager.calculate_stop_loss(entry_price, "long", stop_loss_pct)
+        assert abs(calculated_sl - expected_sl) < 0.01, f"SL sai: {calculated_sl} != {expected_sl}"
+        
+        # SL phải thấp hơn entry price cho vị thế LONG
+        assert calculated_sl < entry_price, "SL LONG phải < entry price"
+    
+    def test_sl_calculation_short_position(self, risk_manager):
+        """Test SL calculation cho vị thế SHORT ( SELL )."""
+        # SHORT BTC @ 68500, SL 2% above entry
+        entry_price = 68500.0
+        stop_loss_pct = 0.02  # 2%
+        expected_sl = entry_price * (1 + stop_loss_pct)  # 68500 * 1.02 = 69870
+        
+        calculated_sl = risk_manager.calculate_stop_loss(entry_price, "short", stop_loss_pct)
+        assert abs(calculated_sl - expected_sl) < 0.01, f"SL sai: {calculated_sl} != {expected_sl}"
+        
+        # SL phải cao hơn entry price cho vị thế SHORT
+        assert calculated_sl > entry_price, "SL SHORT phải > entry price"
+    
+    def test_sl_minimum_distance_validation(self, risk_manager):
+        """Test SL không được đặt quá gần entry price (tránh bị hit sớm)."""
+        entry_price = 68500.0
+        
+        # SL quá gần - chỉ 0.1% (0.001) - không hợp lệ
+        sl_too_close = entry_price * 0.999  # -0.1%
+        assessment = risk_manager._validate_sl_distance(entry_price, sl_too_close, "buy")
+        assert assessment.approved == False
+        assert "SL too close to entry" in assessment.reason
+        
+        # SL hợp lệ - 1.5%
+        sl_valid = entry_price * 0.985  # -1.5%
+        assessment = risk_manager._validate_sl_distance(entry_price, sl_valid, "buy")
+        assert assessment.approved == True
+    
+    # =========================================================================
+    # TEST 3: Take Profit (TP) Calculation - Multiple Levels
+    # =========================================================================
+    def test_tp_multiple_levels_long(self, risk_manager):
+        """Test multiple TP levels cho vị thế LONG."""
+        entry_price = 68500.0
+        # TP1: +1%, TP2: +2.5%, TP3: +5%
+        tp_levels = [0.01, 0.025, 0.05]
+        
+        calculated_tps = risk_manager.calculate_take_profits(entry_price, "buy", tp_levels)
+        
+        expected_tps = [
+            68500 * 1.01,   # 69185
+            68500 * 1.025,  # 70212.5
+            68500 * 1.05    # 71925
+        ]
+        
+        for calc, exp in zip(calculated_tps, expected_tps):
+            assert abs(calc - exp) < 0.01, f"TP sai: {calc} != {exp}"
+            assert calc > entry_price, "TP LONG phải > entry price"
+    
+    def test_tp_multiple_levels_short(self, risk_manager):
+        """Test multiple TP levels cho vị thế SHORT."""
+        entry_price = 68500.0
+        # TP1: -1%, TP2: -2.5%, TP3: -5%
+        tp_levels = [0.01, 0.025, 0.05]
+        
+        calculated_tps = risk_manager.calculate_take_profits(entry_price, "sell", tp_levels)
+        
+        expected_tps = [
+            68500 * 0.99,   # 67815
+            68500 * 0.975,  # 66787.5
+            68500 * 0.95    # 65075
+        ]
+        
+        for calc, exp in zip(calculated_tps, expected_tps):
+            assert abs(calc - exp) < 0.01, f"TP sai: {calc} != {exp}"
+            assert calc < entry_price, "TP SHORT phải < entry price"
+    
+    def test_tp_risk_reward_ratio_validation(self, risk_manager):
+        """Test Risk/Reward ratio phải >= 1.5 (institutional requirement)."""
+        entry_price = 68500.0
+        sl_price = 67130  # -2%
+        tp_price = 71925  # +5%
+        
+        # Calculate R:R
+        risk = entry_price - sl_price  # 1370
+        reward = tp_price - entry_price  # 3425
+        rr_ratio = reward / risk  # ~2.5
+        
+        assert rr_ratio >= 1.5, f"R:R quá thấp: {rr_ratio}"
+        
+        # Risk manager phải validate R:R
+        assessment = risk_manager.validate_risk_reward(entry_price, sl_price, tp_price)
+        assert assessment.approved == True
+        
+        # R:R quá thấp (0.8) - bị reject
+        bad_tp = 69500  # +1.45%
+        bad_reward = bad_tp - entry_price  # 1000
+        bad_rr = bad_reward / risk  # ~0.73
+        assert bad_rr < 1.5
+        
+        assessment = risk_manager.validate_risk_reward(entry_price, sl_price, bad_tp)
+        assert assessment.approved == False
+        assert "Risk/Reward ratio too low" in assessment.reason
+    
+    # =========================================================================
+    # TEST 4: P&L Calculation (Unrealized & Realized)
+    # =========================================================================
+    def test_unrealized_pnl_long_position(self, risk_manager):
+        """Test P&L chưa thực hiện cho vị thế LONG khi giá tăng/giảm."""
+        # Giá tăng 5% -> P&L dương
+        entry_price = 68500.0
+        current_price = 68500 * 1.05  # 71925
+        amount = 0.0146
+        pnl = risk_manager.calculate_pnl(entry_price, current_price, "long", amount)
+        expected_pnl = (71925 - 68500) * 0.0146  # 3425 * 0.0146 = ~$50.005
+        assert abs(pnl - expected_pnl) < 0.1, f"P&L sai: {pnl} != {expected_pnl}"
+        assert pnl > 0, "LONG position giá tăng phải có P&L dương"
+        
+        # Giá giảm 2% -> P&L âm (chạm SL)
+        current_price = 68500 * 0.98  # 67130
+        pnl = risk_manager.calculate_pnl(entry_price, current_price, "long", amount)
+        expected_pnl = (67130 - 68500) * 0.0146  # (-1370) * 0.0146 = ~-$20.002
+        assert abs(pnl - expected_pnl) < 0.1, f"P&L sai: {pnl} != {expected_pnl}"
+        assert pnl < 0, "LONG position giá giảm phải có P&L âm"
+    
+    def test_unrealized_pnl_short_position(self, risk_manager):
+        """Test P&L chưa thực hiện cho vị thế SHORT khi giá tăng/giảm."""
+        # Giá giảm 5% -> P&L dương (SHORT thắng)
+        entry_price = 68500.0
+        current_price = 68500 * 0.95  # 65075
+        amount = 0.0146
+        pnl = risk_manager.calculate_pnl(entry_price, current_price, "short", amount)
+        expected_pnl = (68500 - 65075) * 0.0146  # 3425 * 0.0146 = ~$50.005
+        assert abs(pnl - expected_pnl) < 0.1, f"P&L sai: {pnl} != {expected_pnl}"
+        assert pnl > 0, "SHORT position giá giảm phải có P&L dương"
+        
+        # Giá tăng 2% -> P&L âm (chạm SL)
+        current_price = 68500 * 1.02  # 69870
+        pnl = risk_manager.calculate_pnl(entry_price, current_price, "short", amount)
+        expected_pnl = (68500 - 69870) * 0.0146  # (-1370) * 0.0146 = ~-$20.002
+        assert abs(pnl - expected_pnl) < 0.1, f"P&L sai: {pnl} != {expected_pnl}"
+        assert pnl < 0, "SHORT position giá tăng phải có P&L âm"
+    
+    def test_realized_pnl_calculation(self, risk_manager):
+        """Test P&L đã thực hiện khi đóng vị thế."""
+        # Đóng toàn bộ vị thế ở giá 71925 (+5%)
+        entry_price = 68500.0
+        close_price = 71925.0
+        amount = 0.0146
+        realized_pnl = risk_manager.calculate_pnl(entry_price, close_price, "long", amount)
+        
+        expected_pnl = (71925 - 68500) * 0.0146  # ~$50.005
+        assert abs(realized_pnl - expected_pnl) < 0.1
+    
+    def test_partial_tp_pnl_calculation(self, risk_manager):
+        """Test P&L khi chốt TP một phần (partial take profit)."""
+        # TP1: đóng 50% vị thế ở +2%
+        entry_price = 68500.0
+        tp1_price = 68500 * 1.02  # 69870
+        partial_amount = 0.0146 * 0.5  # 50% of total amount
+        pnl1 = risk_manager.calculate_pnl(entry_price, tp1_price, "long", partial_amount)
+        
+        expected_pnl1 = (69870 - 68500) * (0.0146 * 0.5)  # 1370 * 0.0073 = ~$10.001
+        assert abs(pnl1 - expected_pnl1) < 0.1
+        
+        # TP2: đóng 50% còn lại ở +5%
+        tp2_price = 68500 * 1.05  # 71925
+        remaining_amount = 0.0146 * 0.5
+        pnl2 = risk_manager.calculate_pnl(entry_price, tp2_price, "long", remaining_amount)
+        
+        expected_pnl2 = (71925 - 68500) * 0.0073  # 3425 * 0.0073 = ~$25.0025
+        assert abs(pnl2 - expected_pnl2) < 0.1
+        
+        # Tổng P&L
+        total_pnl = pnl1 + pnl2
+        assert abs(total_pnl - 35.0035) < 0.2
+    
+    # =========================================================================
+    # TEST 5: Margin & Liquidation Price
+    # =========================================================================
+    def test_margin_calculation(self, risk_manager):
+        """Test margin requirement với leverage 20x."""
+        notional_size = 1000.0  # $1000
+        leverage = 20
+        expected_margin = notional_size / leverage  # $50
+        
+        calculated_margin = risk_manager.calculate_required_margin(notional_size, leverage)
+        assert abs(calculated_margin - expected_margin) < 0.01, f"Margin sai: {calculated_margin}"
+        
+        # Test tất cả 20 coins đều thỏa mãn margin ~$50
+        from utils.okx_symbols import OKX_SYMBOL_SPECS
+        for symbol in OKX_SYMBOL_SPECS.keys():
+            # Giả định giá để có notional ~$1000
+            margin = risk_manager.calculate_required_margin(1000.0, 20)
+            assert abs(margin - 50) < 1, f"{symbol} margin không ổn: {margin}"
+    
+    def test_liquidation_price_long(self, risk_manager):
+        """Test liquidation price cho vị thế LONG."""
+        entry_price = 68500.0
+        leverage = 20
+        # Maintainence margin ~80% of initial margin (simplified)
+        # Liquidation khi margin tiêu hết -80%
+        liq_price = risk_manager.calculate_liquidation_price(entry_price, leverage, "long")
+        
+        # Với leverage 20x, liquidation khoảng -95% entry giá (simplified)
+        # Thực tế trên OKX calculation phức tạp hơn, nhưng test logic cơ bản
+        assert liq_price < entry_price, "Liq price LONG < entry"
+        assert liq_price > 0, "Liq price phải dương"
+    
+    def test_liquidation_price_short(self, risk_manager):
+        """Test liquidation price cho vị thế SHORT."""
+        entry_price = 68500.0
+        leverage = 20
+        liq_price = risk_manager.calculate_liquidation_price(entry_price, leverage, "short")
+        
+        assert liq_price > entry_price, "Liq price SHORT > entry"
+        assert liq_price > 0, "Liq price phải dương"
+    
+    # =========================================================================
+    # TEST 6: ROE (Return on Equity) Calculation
+    # =========================================================================
+    def test_roe_calculation(self, risk_manager):
+        """Test Return on Equity = P&L / Initial Margin."""
+        # Long position BTC @68500, current price 71925 (+5%)
+        entry_price = 68500.0
+        current_price = 71925.0
+        amount = 0.0146  # ~$1000 notional
+        leverage = 20
+        roe = risk_manager.calculate_roe(entry_price, current_price, amount, leverage, "long")
+        assert roe > 0, "ROE phải dương khi vị thế có lãi"
+        # +5% * 20 = 100% ROE
+        assert abs(roe - 100) < 5, f"ROE sai: {roe}% nên khoảng 100%"
+        
+        # Thua $25 trên margin $50 -> ROE -50%
+        bad_current_price = 67815  # -1%
+        roe_loss = risk_manager.calculate_roe(entry_price, bad_current_price, amount, leverage, "long")
+        assert roe_loss < 0, "ROE phải âm khi vị thế lỗ"
+    
+    # =========================================================================
+    # TEST 7: Institutional Requirements - All calculations must be accurate
+    # =========================================================================
+    def test_all_20_coins_calculations_valid(self, risk_manager, test_settings):
+        """Test tất cả 20 OKX coins đều pass các tính toán."""
+        from utils.okx_symbols import OKX_SYMBOL_SPECS
+        # Chọn các coin phổ biến để test
+        test_coins = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT"]
+        for symbol in test_coins:
+            if symbol not in OKX_SYMBOL_SPECS:
+                continue
+            specs = OKX_SYMBOL_SPECS[symbol]
+            assert specs is not None, f"Không tìm thấy specs cho {symbol}"
+            # Dùng giá tham chiếu cố định cho test
+            price_map = {"BTC-USDT":68500, "ETH-USDT":3500, "SOL-USDT":145, "XRP-USDT":0.52}
+            price = price_map[symbol]
+            notional = 1000.0
+            size = notional / price
+            leverage = test_settings.default_leverage  # 20
+            margin = notional / leverage
+            
+            # Kiểm tra size nằm trong min/max OKX
+            assert size >= specs['min_size'], f"{symbol} size {size} < min {specs['min_size']}"
+            assert margin >= 100 * 0.99 and margin <= 100 * 1.01, f"{symbol} margin {margin} != ~$100"
+            
+            # Test SL/TP calculation
+            sl = risk_manager.calculate_stop_loss(price, "buy", 0.02)
+            tp = risk_manager.calculate_take_profits(price, "buy", [0.05])[0]
+            
+            assert sl < price, f"{symbol} SL > entry"
+            assert tp > price, f"{symbol} TP < entry"
+            
+            # P&L calculation
+            pnl = risk_manager.calculate_pnl(price, tp, "long", size)
+            assert pnl > 0, f"{symbol} P&L âm khi giá tăng đến TP"

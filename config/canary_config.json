@@ -1,0 +1,6 @@
+{
+  "canary_capital": 5000,
+  "per_symbol_cap": 2000,
+  "max_leverage": 2,
+  "allowed_symbols": ["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
+}
