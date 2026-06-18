@@ -215,68 +215,72 @@ class MessageTemplates:
 
     @staticmethod
     def get_news_dashboard(data: Dict[str, Any]) -> str:
-        """Dashboard Tin tức Thị trường 48H chuyên nghiệp (Bilingual & Coin Analysis)"""
+        """Dashboard Tin tức Thị trường 48H chuyên nghiệp (Thuần Việt - OKX Premium Style)"""
         news_list = data.get("news", [])
         
-        # Xử lý tóm tắt AI song ngữ
+        # Xử lý tóm tắt AI (chỉ lấy tiếng Việt)
         ai_summary_data = data.get("ai_summary", {})
         if isinstance(ai_summary_data, dict):
             ai_summary_vi = ai_summary_data.get("vi", "Đang phân tích...")
-            ai_summary_en = ai_summary_data.get("en", "Analyzing...")
-            ai_summary_display = f"{ai_summary_vi}\n\n{ai_summary_en}"
         else:
-            ai_summary_display = str(ai_summary_data)
+            ai_summary_vi = str(ai_summary_data)
 
-        # Xử lý Coin Mentions
+        # Xử lý Coin Mentions với progress bar
         coin_mentions = data.get("coin_mentions", {})
         hot_coins_str = ""
         if coin_mentions:
-            hot_coins_str = "🔥 <b>HOT COINS (Sentiment):</b>\n"
+            hot_coins_str = "🔥 <b>XU HƯỚNG DÒNG TIỀN (HOT COINS):</b>\n"
             # Show top 5 coins
             for coin, sent_data in list(coin_mentions.items())[:5]:
                 bull = sent_data.get("bullish", 0)
                 bear = sent_data.get("bearish", 0)
+                total = bull + bear or 1
+                bull_pct = round(bull / total * 100)
+                bear_pct = round(bear / total * 100)
+                
+                # Progress bar emoji
+                bull_bars = "🟢" * min(3, round(bull_pct / 33))
+                bear_bars = "🔴" * min(3, round(bear_pct / 33))
+                
                 if bull > bear:
-                    icon = "🟢"
+                    status = "Phe Mua kiểm soát"
                 elif bear > bull:
-                    icon = "🔴"
+                    status = "Phe Bán gia tăng áp lực"
                 else:
-                    icon = "⚪"
-                hot_coins_str += f"├─ {icon} <b>{coin}</b>: {bull} Bull | {bear} Bear\n"
-            hot_coins_str += "━━━\n\n"
+                    status = "Đi ngang / Sideway"
+                
+                hot_coins_str += f"• 🪙 <b>{coin}</b>: {bull_bars} | {bear_bars} ({status})\n"
+            hot_coins_str += "\n"
 
         last_update = datetime.fromtimestamp(data.get("last_update", time.time())).strftime("%H:%M:%S")
 
+        # Xử lý tin tức với source tags
         news_items = ""
-        for i, news in enumerate(news_list[:6]):  # Show top 6
+        for i, news in enumerate(news_list[:5]):  # Show top 5
             try:
-                source_emoji = news.get("flag", "🌐")
-                title = MessageTemplates._escape_html(news.get("title", "Không rõ"))
                 source = MessageTemplates._escape_html(news.get("source", "N/A"))
-                link = news.get("link", "").strip()
-                
-                # Highlight if strong sentiment
+                title = MessageTemplates._escape_html(news.get("title", "Không rõ"))
                 sent = news.get("sentiment", "neutral")
-                sent_emoji = "🟢 " if sent == "bullish" else "🔴 " if sent == "bearish" else "🔹 "
-
-                if link:
-                    link = MessageTemplates._escape_html(link)
-                    news_items += f"{sent_emoji}<b>{title}</b>\n└─ {source_emoji} <i>{source}</i>\n\n"
+                
+                # Sentiment emoji
+                sent_emoji = "🟢" if sent == "bullish" else "🔴" if sent == "bearish" else "⚠️"
+                
+                # Format: [Source] Title
+                news_items += f"{i+1}. {sent_emoji} <b>[{source}]</b> {title}\n"
             except Exception:
                 continue
 
         if not news_items:
-            news_items = "📭 <i>Hiện chưa tìm thấy tin tức nổi bật nào trong 48h qua. / No notable news in the last 48h.</i>\n\n"
+            news_items = "📭 <i>Hiện chưa tìm thấy tin tức nổi bật nào trong 48h qua.</i>\n"
 
         return (
-            "📰 " + MessageTemplates.format_title("GLOBAL MARKET NEWS (48H)") +
-            f"{ai_summary_display}\n\n"
-            "━━━\n"
+            "🌐 <b>BẢN TIN THỊ TRƯỜNG TOÀN CẦU (48H)</b>\n\n"
+            f"{ai_summary_vi}\n\n"
             f"{hot_coins_str}"
-            "📰 <b>TOP HEADLINES:</b>\n\n"
+            "📰 <b>TIN TỨC NỔI BẬT (TOP HEADLINES):</b>\n\n"
             f"{news_items}"
             "━━━\n"
-            f"🕒 <i>Cập nhật / Last update: {last_update}</i>"
+            f"📅 <i>Cập nhật cuối: {last_update} (Giờ hệ thống)</i>"
         )
 
     @staticmethod

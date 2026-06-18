@@ -335,13 +335,12 @@ class NewsEngine:
 
     def _generate_ai_summary(self) -> Dict[str, str]:
         """
-        Generate bilingual (VI/EN) professional market sentiment summary.
-        Returns dict with 'vi' and 'en' keys.
+        Generate professional Vietnamese market sentiment summary (OKX Premium Style).
+        Returns dict with 'vi' key only.
         """
         if not self._news_cache:
             return {
                 "vi": "📭 Chưa có tin tức nổi bật trong 48h qua.",
-                "en": "📭 No notable news found in the last 48 hours.",
             }
 
         all_text = " ".join([n["title"] + " " + n.get("description", "") for n in self._news_cache]).lower()
@@ -353,22 +352,15 @@ class NewsEngine:
         bear_pct = round(bear_score / total * 100)
 
         if bull_score > bear_score * 1.3:
-            sentiment_vi = f"🐂 <b>Tích cực (Bullish)</b> — Tỷ lệ: 📈{bull_pct}% / 📉{bear_pct}%"
-            sentiment_en = f"🐂 <b>Bullish Sentiment</b> — Score: 📈{bull_pct}% / 📉{bear_pct}%"
-            body_vi = "Tin tức 48h nghiêng về chiều tích cực. Dòng tiền và tâm lý nhà đầu tư đang cải thiện. Xu hướng tăng được hỗ trợ bởi nhiều luồng tin thuận lợi."
-            body_en = "48h news tilts positive. Money flow and investor sentiment improving. Uptrend supported by multiple favorable developments."
+            sentiment_label = "� TÍCH CỰC (Bullish)"
+            body_text = "Dòng tiền và tâm lý nhà đầu tư đang có sự cải thiện rõ rệt. Xu hướng tăng (Uptrend) đang được củng cố vững chắc nhờ loạt tin tức vĩ mô thuận lợi trong 48 giờ qua."
         elif bear_score > bull_score * 1.3:
-            sentiment_vi = f"🐻 <b>Tiêu cực (Bearish)</b> — Tỷ lệ: 📉{bear_pct}% / 📈{bull_pct}%"
-            sentiment_en = f"🐻 <b>Bearish Sentiment</b> — Score: 📉{bear_pct}% / 📈{bull_pct}%"
-            body_vi = "Nhiều tin tức tiêu cực trong 48h qua. Áp lực bán gia tăng, nên thận trọng với các lệnh Long. Ưu tiên quản lý rủi ro chặt chẽ."
-            body_en = "Heavy negative news in the last 48h. Selling pressure rising, caution advised for long positions. Prioritize tight risk management."
+            sentiment_label = "� TIÊU CỰC (Bearish)"
+            body_text = "Áp lực bán gia tăng đáng kể trong 48h qua. Nên thận trọng với các lệnh Long và ưu tiên quản lý rủi ro chặt chẽ."
         else:
-            sentiment_vi = f"⚖️ <b>Trung lập (Neutral)</b> — Tỷ lệ: 📈{bull_pct}% / 📉{bear_pct}%"
-            sentiment_en = f"⚖️ <b>Neutral Sentiment</b> — Score: 📈{bull_pct}% / 📉{bear_pct}%"
-            body_vi = "Thị trường đang nhận tín hiệu trái chiều từ các luồng tin tức. Chưa có xu hướng rõ ràng — nên chờ xác nhận trước khi vào lệnh."
-            body_en = "Market receiving mixed signals. No clear directional bias — wait for confirmation before entering positions."
+            sentiment_label = "🟡 TRUNG LẬP (Neutral)"
+            body_text = "Thị trường đang nhận tín hiệu trái chiều từ các luồng tin tức. Chưa có xu hướng rõ ràng — nên chờ xác nhận trước khi vào lệnh."
 
         return {
-            "vi": f"<b>🧠 Phân tích AI — Tâm lý thị trường:</b>\n{sentiment_vi}\n\n<i>{body_vi}</i>",
-            "en": f"<b>🧠 AI Analysis — Market Sentiment:</b>\n{sentiment_en}\n\n<i>{body_en}</i>",
+            "vi": f"📊 Tâm lý thị trường: {sentiment_label} — Lực mua: {bull_pct}% | Lực bán: {bear_pct}%\n⚡ Đánh giá AI: {body_text}",
         }
