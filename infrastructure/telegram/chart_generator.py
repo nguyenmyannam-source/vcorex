@@ -57,10 +57,18 @@ def generate_entry_chart_sync(
         
         # Calculate ADX series (simplified - in production use full ADX calculation)
         exact_adx = indicators.get("adx", 0.0)
+        
+        # Validate ADX data
+        if exact_adx is None or exact_adx == 0.0:
+            logger.warning(f"[CHART-ADX] ADX value is missing or zero ({exact_adx}), using default value 25.0")
+            exact_adx = 25.0
+        
         # Create ADX series with last value
         adx_values = [exact_adx * 0.8 + (i / len(df)) * exact_adx * 0.2 for i in range(len(df))]
         adx_values[-1] = exact_adx
         df["ADX"] = adx_values
+        
+        logger.info(f"[CHART-ADX] ADX data synchronized: last_value={exact_adx:.2f}, series_length={len(adx_values)}")
         
         # OKX Premium 3-Panel Layout: 65% Price, 15% Volume, 20% ADX
         fig = make_subplots(
