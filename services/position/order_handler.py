@@ -94,6 +94,8 @@ class OrderHandler:
         # [PHASE 3] Fallback queue for orphaned positions
         self._fallback_queue = asyncio.Queue()
         self._fallback_worker_task = None
+        # [FIX ORPHAN TP/SL] Async lock to protect cleanup flow from race conditions
+        self._cleanup_lock = asyncio.Lock()
 
     def subscribe_halt_trading(self) -> None:
         """Wire CONTROL_HALT_TRADING event to block new entries (no liquidation)."""
@@ -1626,22 +1628,107 @@ class OrderHandler:
         return closed_count
 
     async def cancel_all_active_algo_orders(self) -> None:
-        """[GRACEFUL-SHUTDOWN] Hủy toàn bộ lệnh Algo (TP/SL) đang treo trên sàn OKX."""
+        """[GRACEFUL-SHUTDOWN] Hủy toàn bộ lệnh Algo (TP/SL) đang treo trên sàn OKX.
+        
+        [FIX ORPHAN TP/SL] - Bao gồm cả TP (algo_order_ids) và SL (sl_algo_order_id)
+        [FIX VERIFICATION] - Verify với sàn sau khi hủy để đảm bảo thành công
+        [FIX RETRY] - Retry mechanism nếu hủy thất bại
+        [FIX LOCK] - Sử dụng lock để tránh race condition
+        """
         logger.info("[SHUTDOWN] Cancelling all active algo orders on exchange...")
-        cancel_tasks = []
-        for pos in self.get_active_positions():
-            algo_ids = getattr(pos, "algo_order_ids", None) or []
-            if algo_ids:
-                symbol = pos.symbol
-                cancel_tasks.append(
-                    self.okx_client.cancel_algo_orders(symbol, algo_ids)
-                )
-        if cancel_tasks:
-            results = await asyncio.gather(*cancel_tasks, return_exceptions=True)
-            for r in results:
-                if isinstance(r, Exception):
-                    logger.error(f"[SHUTDOWN] Failed to cancel algo orders: {r}")
-        logger.info("[SHUTDOWN] All algo order cancellations dispatched.")
+        
+        # [FIX LOCK] Sử dụng global lock để tránh race condition
+        async with self._cleanup_lock:
+            cancel_tasks = []
+            position_map = {}  # Map task index -> position for verification
+            
+            for idx, pos in enumerate(self.get_active_positions()):
+                # [FIX ORPHAN TP/SL] Bao gồm cả TP và SL orders
+                algo_ids = list(getattr(pos, "algo_order_ids", None) or [])
+                sl_algo_id = getattr(pos, "sl_algo_order_id", None)
+                if sl_algo_id and sl_algo_id not in algo_ids:
+                    algo_ids.append(sl_algo_id)
+                
+                if algo_ids:
+                    symbol = pos.symbol
+                    cancel_tasks.append(
+                        self.okx_client.cancel_algo_orders(symbol, algo_ids)
+                    )
+                    position_map[idx] = pos
+            
+            if cancel_tasks:
+                results = await asyncio.gather(*cancel_tasks, return_exceptions=True)
+                
+                # [FIX VERIFICATION + RETRY] Verify với sàn sau khi hủy và retry nếu cần
+                for idx, r in enumerate(results):
+                    pos = position_map.get(idx)
+                    if not pos:
+                        continue
+                    
+                    if isinstance(r, Exception):
+                        logger.error(f"[SHUTDOWN] Failed to cancel algo orders: {r}")
+                        # [FIX RETRY] Retry mechanism cho failed cancellations
+                        await self._retry_cancel_algo_orders(pos)
+                    else:
+                        # Chỉ verify khi cancel thành công (r không phải Exception)
+                        await self._verify_algo_orders_cancelled(pos)
+            
+            logger.info("[SHUTDOWN] All algo order cancellations dispatched and verified.")
+
+    async def _retry_cancel_algo_orders(self, pos) -> None:
+        """[FIX RETRY] Retry mechanism cho việc hủy algo orders thất bại."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                algo_ids = list(getattr(pos, "algo_order_ids", None) or [])
+                sl_algo_id = getattr(pos, "sl_algo_order_id", None)
+                if sl_algo_id and sl_algo_id not in algo_ids:
+                    algo_ids.append(sl_algo_id)
+                
+                if algo_ids:
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                    success = await self.okx_client.cancel_algo_orders(pos.symbol, algo_ids)
+                    if success:
+                        logger.info(f"[SHUTDOWN-RETRY] Successfully cancelled algo orders for {pos.symbol} on attempt {attempt + 1}")
+                        # Cập nhật local state sau khi cancel thành công
+                        if hasattr(pos, "algo_order_ids"):
+                            pos.algo_order_ids = []
+                        if hasattr(pos, "sl_algo_order_id"):
+                            pos.sl_algo_order_id = None
+                        return
+            except Exception as e:
+                logger.warning(f"[SHUTDOWN-RETRY] Attempt {attempt + 1} failed for {pos.symbol}: {e}")
+        
+        logger.error(f"[SHUTDOWN-RETRY] Failed to cancel algo orders for {pos.symbol} after {max_retries} attempts")
+
+    async def _verify_algo_orders_cancelled(self, pos) -> None:
+        """[FIX VERIFICATION] Verify với sàn rằng algo orders đã được hủy thành công."""
+        try:
+            # Fetch pending algo orders từ sàn cho symbol này
+            pending_orders = await self.okx_client.fetch_pending_algo_orders(symbol=pos.symbol, limit=100)
+            
+            # Kiểm tra xem có algo orders nào còn tồn tại không
+            local_algo_ids = set(getattr(pos, "algo_order_ids", None) or [])
+            sl_algo_id = getattr(pos, "sl_algo_order_id", None)
+            if sl_algo_id:
+                local_algo_ids.add(sl_algo_id)
+            
+            if pending_orders and local_algo_ids:
+                # Kiểm tra xem các algo orders local có còn trong pending orders không
+                pending_algo_ids = {order.get('algoId') for order in pending_orders}
+                orphan_algo_ids = local_algo_ids & pending_algo_ids
+                
+                if orphan_algo_ids:
+                    logger.critical(
+                        f"[CRITICAL-SAFETY] Phát hiện {len(orphan_algo_ids)} algo orders bị mất ngầm sau khi hủy: "
+                        f"{orphan_algo_ids} cho {pos.symbol}. Tiến hành hủy lại khẩn cấp."
+                    )
+                    # Thử hủy lại các orphan orders
+                    await self.okx_client.cancel_algo_orders(pos.symbol, list(orphan_algo_ids))
+            else:
+                logger.debug(f"[SHUTDOWN-VERIFY] Verified: No orphan algo orders for {pos.symbol}")
+        except Exception as e:
+            logger.warning(f"[SHUTDOWN-VERIFY] Failed to verify algo orders for {pos.symbol}: {e}")
 
     async def panic_close_all_positions(self, reason: str = "CIRCUIT_BREAKER") -> tuple[int, int]:
         """

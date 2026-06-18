@@ -622,7 +622,7 @@ class OKXExchange(BaseExchange):
 
                             logger.warning(f"[CIRCUIT BREAKER] 429 Too Many Requests cho {path}. Domain {domain} bị khóa phạt {penalty:.2f}s (Lần thử {attempt + 1}/{max_retries}).")
 
-                            await asyncio.sleep(penalty + random.uniform(0.010, 0.050))
+                            await asyncio.sleep(penalty + random.uniform(0.1, 0.5))
 
                             continue
                         else:

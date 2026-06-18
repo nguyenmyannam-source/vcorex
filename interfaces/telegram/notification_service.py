@@ -219,7 +219,7 @@ class NotificationService:
                             # Run the coroutine using run_coroutine_threadsafe nếu có loop
                             if loop and not loop.is_closed():
                                 future = asyncio.run_coroutine_threadsafe(res, loop)
-                                future.result(timeout=10)  # Chờ tối đa 10s
+                                future.result(timeout=30.0)  # Chờ tối đa 30s để tránh timeout khi mạng chậm
                             else:
                                 # Fallback: Tạo event loop mới trong thread này
                                 try:
@@ -278,7 +278,7 @@ class NotificationService:
                             if inspect.iscoroutine(res) or asyncio.iscoroutine(res):
                                 if loop and not loop.is_closed():
                                     future = asyncio.run_coroutine_threadsafe(res, loop)
-                                    future.result(timeout=15)
+                                    future.result(timeout=30.0)  # Chờ tối đa 30s để tránh timeout khi tải ảnh nặng
                                 else:
                                     try:
                                         asyncio.run(res)
